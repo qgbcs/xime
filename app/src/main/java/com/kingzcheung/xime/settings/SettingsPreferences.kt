@@ -18,6 +18,7 @@ object SettingsPreferences {
     private const val KEY_RPC_LOG_TO_DISK = "rpc_log_to_disk"
     private const val KEY_RPC_LOG_AUTO_WRAP = "rpc_log_auto_wrap"
     private const val KEY_LAUNCHER_ICON_HIDDEN = "launcher_icon_hidden"
+    private const val KEY_SETTING_ITEM_VISIBLE_PREFIX = "setting_item_visible_"
     
     private const val KEY_SOUND_ENABLED = "sound_enabled"
     private const val KEY_SOUND_VOLUME = "sound_volume"
@@ -664,6 +665,19 @@ object SettingsPreferences {
 
     fun setBackgroundCaptureWakeLockEnabled(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_BACKGROUND_CAPTURE_WAKE_LOCK, enabled).apply()
+    }
+
+    fun isSettingItemVisible(context: Context, itemId: String): Boolean {
+        require(itemId.matches(Regex("[a-z][a-z0-9_]*"))) { "Invalid setting item ID: $itemId" }
+        val defaultVisible = itemId != "about_app"
+        return getPrefs(context).getBoolean("$KEY_SETTING_ITEM_VISIBLE_PREFIX$itemId", defaultVisible)
+    }
+
+    fun setSettingItemVisible(context: Context, itemId: String, visible: Boolean) {
+        require(itemId.matches(Regex("[a-z][a-z0-9_]*"))) { "Invalid setting item ID: $itemId" }
+        getPrefs(context).edit()
+            .putBoolean("$KEY_SETTING_ITEM_VISIBLE_PREFIX$itemId", visible)
+            .apply()
     }
 
     fun isClipboardSyncEnabled(context: Context): Boolean {

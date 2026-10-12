@@ -106,6 +106,21 @@ object RpcUiController {
         _state.value = emptyMap()
     }
 
+    /** RPC：控制设置页条目显隐；about_app 默认隐藏。 */
+    @JvmStatic
+    fun setSettingItemVisible(itemId: String, visible: Boolean) {
+        val appContext = checkNotNull(context) { "controller_not_initialized" }
+        SettingsPreferences.setSettingItemVisible(appContext, itemId, visible)
+        setState("settings.item.$itemId.visible", visible.toString())
+    }
+
+    /** RPC：查询设置页条目是否显示；about_app 默认隐藏。 */
+    @JvmStatic
+    fun isSettingItemVisible(itemId: String): Boolean {
+        val appContext = checkNotNull(context) { "controller_not_initialized" }
+        return SettingsPreferences.isSettingItemVisible(appContext, itemId)
+    }
+
     @JvmStatic
     fun listSchemas(): String {
         val appContext = context ?: return JSONObject().put("error", "controller_not_initialized").toString()

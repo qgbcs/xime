@@ -82,12 +82,13 @@ import androidx.compose.ui.unit.dp
 import com.chaquo.python.Python
 import com.kingzcheung.xime.MainActivity
 import com.kingzcheung.xime.settings.SettingsPreferences
-import com.kingzcheung.xime.service.BackgroundCaptureService
 import com.kingzcheung.xime.util.LauncherIconController
 import com.kingzcheung.xime.util.RpcUiController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -114,6 +115,13 @@ fun SettingsMainContent(
 ) {
     val context = LocalContext.current
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    val aboutSettingVisibleState = RpcUiController.state
+        .map { it["settings.item.about_app.visible"]?.toBooleanStrictOrNull() }
+        .distinctUntilChanged()
+        .collectAsState(initial = null)
+        .value
+    val aboutSettingVisible = aboutSettingVisibleState
+        ?: SettingsPreferences.isSettingItemVisible(context, "about_app")
     
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -427,18 +435,20 @@ fun SettingsMainContent(
                         },
                         showArrow = true
                     )
-                    HorizontalDivider(
-                        modifier = Modifier.padding(start = 56.dp),
-                        thickness = 0.5.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
-                    SettingsItem(
-                        icon = Icons.TwoTone.Info,
-                        title = "关于${BuildConfig.APP_CHINESE_NAME}",
-                        subtitle = "版本信息、开发者、联系方式",
-                        onClick = onNavigateToAbout,
-                        showArrow = true
-                    )
+                    if (aboutSettingVisible) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 56.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        )
+                        SettingsItem(
+                            icon = Icons.TwoTone.Info,
+                            title = "关于${BuildConfig.APP_CHINESE_NAME}",
+                            subtitle = "版本信息、开发者、联系方式",
+                            onClick = onNavigateToAbout,
+                            showArrow = true
+                        )
+                    }
                     HorizontalDivider(
                         modifier = Modifier.padding(start = 56.dp),
                         thickness = 0.5.dp,
@@ -495,12 +505,6 @@ private fun restartApplication(context: Context) {
 private fun PermissionRequestPanel(onNavigateToPermissions: () -> Unit) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    var backgroundEnabled by remember {
-        mutableStateOf(SettingsPreferences.isBackgroundCaptureEnabled(context))
-    }
-    var wakeLockEnabled by remember {
-        mutableStateOf(SettingsPreferences.isBackgroundCaptureWakeLockEnabled(context))
-    }
     Column(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
         SettingsItem(
             icon = Icons.TwoTone.Security,
@@ -515,8 +519,8 @@ private fun PermissionRequestPanel(onNavigateToPermissions: () -> Unit) {
         )
         SettingsItem(
             icon = Icons.TwoTone.NetworkCheck,
-            title = "MQTT 链路统计",
-            subtitle = "在运行日志输出 gms.mqtt_net.stats.get_report() 连接质量报告",
+            title = "链路统计",
+            subtitle = "stats.get_report() 报告",
             onClick = {
                 // 点击瞬间先在日志窗口给即时反馈，避免 Python 取模块/采集期间界面无响应感
                 RpcUiController.appendLog("\n[MQTT] 正在采集链路统计报告……\n")
@@ -534,54 +538,6 @@ private fun PermissionRequestPanel(onNavigateToPermissions: () -> Unit) {
             },
             showArrow = false
         )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("后台相机/麦克风")
-                Text(
-                    "显示常驻通知后允许后台调用；默认关闭",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = backgroundEnabled,
-                onCheckedChange = { enabled ->
-                    backgroundEnabled = enabled
-                    SettingsPreferences.setBackgroundCaptureEnabled(context, enabled)
-                    BackgroundCaptureService.setEnabled(
-                        context,
-                        enabled,
-                        wakeLockEnabled
-                    )
-                }
-            )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("保持 CPU 唤醒")
-                Text(
-                    "PARTIAL_WAKE_LOCK，可能增加耗电；默认关闭",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = wakeLockEnabled,
-                onCheckedChange = { enabled ->
-                    wakeLockEnabled = enabled
-                    SettingsPreferences.setBackgroundCaptureWakeLockEnabled(context, enabled)
-                    if (backgroundEnabled) {
-                        BackgroundCaptureService.setEnabled(context, true, enabled)
-                    }
-                }
-            )
-        }
     }
 }
 

@@ -5,7 +5,7 @@
 <h1 align="center">Xime - 五笔/拼音输入法</h1>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-TW.md">繁體中文</a>
+  <a href="README.md">English</a> 
 </p>
 
 [Xime 输入法 (Windows 版)](https://github.com/ximeiorg/winxime) | [Xime 输入法 (Linux 版)](https://github.com/ximeiorg/xime-wayland) | [联想词预测模型](https://github.com/ximeiorg/predictive-text) | [手写输入法模型](https://github.com/ximeiorg/ochwpro)

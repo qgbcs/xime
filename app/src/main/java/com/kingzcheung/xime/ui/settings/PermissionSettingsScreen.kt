@@ -13,7 +13,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -26,6 +28,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -42,6 +45,8 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.core.content.ContextCompat
+import com.kingzcheung.xime.service.BackgroundCaptureService
+import com.kingzcheung.xime.settings.SettingsPreferences
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.core.net.toUri
@@ -63,6 +68,12 @@ fun PermissionSettingsContent(onBack: () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val recoveryScope = rememberCoroutineScope()
+    var backgroundEnabled by remember {
+        mutableStateOf(SettingsPreferences.isBackgroundCaptureEnabled(context))
+    }
+    var wakeLockEnabled by remember {
+        mutableStateOf(SettingsPreferences.isBackgroundCaptureWakeLockEnabled(context))
+    }
 
     var refreshKey by remember { mutableStateOf(0) }
 
@@ -331,6 +342,53 @@ fun PermissionSettingsContent(onBack: () -> Unit) {
                         }
                     }
                 )
+            }
+
+            SettingsSection(title = "后台访问") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("后台相机/麦克风")
+                        Text(
+                            "显示常驻通知后允许后台调用；默认关闭",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = backgroundEnabled,
+                        onCheckedChange = { enabled ->
+                            backgroundEnabled = enabled
+                            SettingsPreferences.setBackgroundCaptureEnabled(context, enabled)
+                            BackgroundCaptureService.setEnabled(context, enabled, wakeLockEnabled)
+                        }
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("保持 CPU 唤醒")
+                        Text(
+                            "PARTIAL_WAKE_LOCK，可能增加耗电；默认关闭",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = wakeLockEnabled,
+                        onCheckedChange = { enabled ->
+                            wakeLockEnabled = enabled
+                            SettingsPreferences.setBackgroundCaptureWakeLockEnabled(context, enabled)
+                            if (backgroundEnabled) {
+                                BackgroundCaptureService.setEnabled(context, true, enabled)
+                            }
+                        }
+                    )
+                }
             }
         }
     }

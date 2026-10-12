@@ -52,6 +52,8 @@
 
 调试接口可通过 RPC 调用 `RpcUiController.buildInfo()` 查询版本、Git 提交和确定性 `source_fingerprint`。该指纹覆盖 `app/src/main/java`、`app/src/main/jni/librime_jni`、Python、资源、assets 和 Manifest，不含构建时间；`imeState()` 另会返回方案名、键盘布局及 Rime 初始化状态。这些接口用于检查运行中的构建和输入状态，不会由 APK 构建过程调用。
 
+可从 Python 调整设置页条目显隐，例如 `from com.kingzcheung.xime.util import RpcUiController` 后调用 `RpcUiController.setSettingItemVisible("about_app", True)` 显示关于应用入口；`False` 隐藏该入口。该设置会持久化保存，未配置时关于应用入口默认隐藏。
+
 ## 提交信息格式
 
 ```
@@ -70,4 +72,3 @@
 
 ---
 
-再次感谢你的贡献！

@@ -356,7 +356,7 @@ fun CandidateBar(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    painter = painterResource(id = if (visuals.isDarkTheme) R.drawable.logo_dark else R.drawable.logo),
+                                    painter = painterResource(R.drawable.ic_launcher_foreground),
                                     contentDescription = "${BuildConfig.APP_CHINESE_NAME} Logo",
                                     tint = Color.Unspecified,
                                     modifier = Modifier.size(20.dp)

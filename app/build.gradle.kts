@@ -1,4 +1,5 @@
 import com.android.build.gradle.internal.api.BaseVariantOutputImpl
+import org.gradle.api.tasks.Sync
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.Properties
@@ -86,6 +87,26 @@ require(buildAbis.isNotEmpty() && buildAbis.all { it in supportedAbis }) {
 
 val configuredAppName = providers.gradleProperty("appName").orElse("输入法").get()
 val configuredChineseAppName = providers.gradleProperty("appChineseName").orElse("默认").get()
+val configuredAppIconPath = providers.gradleProperty("appIconPath")
+    .orElse(providers.environmentVariable("APP_ICON_PATH"))
+    .orElse(layout.projectDirectory.file("src/main/res/drawable/ic_launcher_foreground.xml").asFile.absolutePath)
+val configuredAppIcon = configuredAppIconPath.map { file(it).canonicalFile }
+val configuredAppIconExtension = configuredAppIcon.map { it.extension.lowercase() }
+val generatedAppIconResources = layout.buildDirectory.dir("generated/appIcon/res")
+val generateAppIconResources = tasks.register<Sync>("generateAppIconResources") {
+    val iconFile = configuredAppIcon.get()
+    val iconExtension = configuredAppIconExtension.get()
+    require(iconFile.isFile && iconFile.canRead() && iconFile.length() > 0) {
+        "APP_ICON_PATH is missing, unreadable, or empty: $iconFile"
+    }
+    require(iconExtension in setOf("png", "webp", "xml")) {
+        "APP_ICON_PATH must point to a PNG, WebP, or Android vector XML file: $iconFile"
+    }
+    inputs.file(iconFile)
+    from(iconFile)
+    into(generatedAppIconResources.map { it.dir("drawable") })
+    rename { "ic_launcher_foreground.$iconExtension" }
+}
 val configuredApplicationId = providers.gradleProperty("applicationId")
     .orElse("com.kingzcheung.xime")
     .get()
@@ -232,7 +253,10 @@ android {
     // 测试 classpath 包含 main assets，使 T9Decoder() 无参构造可加载 pinyin_lm.bin
     sourceSets {
         getByName("debug") {
-            res.srcDir("$buildDir/generated/debugAppIcon/res")
+            res.srcDir(generatedAppIconResources.get().asFile)
+        }
+        getByName("release") {
+            res.srcDir(generatedAppIconResources.get().asFile)
         }
         getByName("test") {
             resources.srcDirs("src/main/assets")
@@ -255,6 +279,15 @@ android {
             }
             isUniversalApk = buildAbis.size > 1
         }
+    }
+}
+
+tasks.configureEach {
+    if ((name.startsWith("generate") || name.startsWith("merge") ||
+            name.startsWith("process") || name.startsWith("map")) &&
+        (name.contains("Debug") || name.contains("Release"))
+    ) {
+        dependsOn(generateAppIconResources)
     }
 }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
+APP_ICON_PATH="${APP_ICON_PATH:-$PWD/app/src/main/res/drawable/ic_launcher_foreground.xml}"
 
 BUILD_VARIANT="debug"
 case "${1:-}" in
@@ -240,6 +241,13 @@ if [[ "$BUILD_VARIANT" == "release" ]]; then
     ensure_signing_python_dep || true
 fi
 
+if [[ ! -f "$APP_ICON_PATH" || ! -r "$APP_ICON_PATH" || ! -s "$APP_ICON_PATH" ]]; then
+    echo "错误: 图标文件不存在、不可读或为空：$APP_ICON_PATH" >&2
+    exit 1
+fi
+APP_ICON_PATH="$(realpath -- "$APP_ICON_PATH")"
+printf '应用图标文件：%s\n' "$APP_ICON_PATH"
+
 # 使用数组传参，避免续行符问题
 gradle_args=(
     "-PappName=$APP_NAME"
@@ -247,6 +255,7 @@ gradle_args=(
     "-PversionCode=$VERSION_CODE"
     "-PversionName=$VERSION_NAME"
     "-PbuildAbis=$BUILD_ABIS"
+    "-PappIconPath=$APP_ICON_PATH"
 )
 
 gradlew_cmd=(./gradlew --no-daemon)
