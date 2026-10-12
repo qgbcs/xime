@@ -1,0 +1,435 @@
+package com.kingzcheung.xime.service
+
+import android.view.KeyEvent
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalView
+import com.kingzcheung.xime.keyboard.OverlayRoute
+import com.kingzcheung.xime.rime.T9InputController
+import com.kingzcheung.xime.settings.SettingsPreferences
+import com.kingzcheung.xime.ui.keyboard.KeyboardCallbacks
+import com.kingzcheung.xime.ui.keyboard.isT9Schema
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/**
+ * 构建键盘回调集合（KeyboardCallbacks）。
+ *
+ * 所有回调直接操作服务层状态与方法；service 内部成员对同模块可见（internal）。
+ * 与原始实现在 onCreateInputView 内联构建的行为完全一致：
+ * 仅当 [floatingMinY] 变化时重建（remember key 与原实现相同）。
+ */
+@Composable
+internal fun rememberImeKeyboardCallbacks(
+    service: XimeInputMethodService,
+    floatingMinY: Int,
+    state: InputUIState,
+    effectiveScreenH: Int,
+): KeyboardCallbacks {
+    val view = LocalView.current
+    return remember(floatingMinY) {
+        KeyboardCallbacks(
+            onKeyPress = { key, isShifted ->
+                // 剪贴板历史搜索态：按键仍走 RIME 引擎（候选栏正常显示拼音候选，
+                // 中文可组词），引擎上屏经 service.commitText 重定向写入搜索框。
+                val s = service.uiState.value
+                if (s.clipboardSearchActive) {
+                    val cs = service.candidateState.value
+                    val composing = cs.isComposing ||
+                        cs.inputText.isNotEmpty() ||
+                        cs.preeditText.isNotEmpty() ||
+                        cs.pendingEnglishText.isNotEmpty()
+                    when {
+                        // 退格：有 RIME 编码先删编码，无编码才删搜索框字符，绝不回删宿主
+                        key == "delete" -> {
+                            if (composing) {
+                                service.keyRouter.handleKeyPress("delete", false)
+                            } else if (s.clipboardSearchQuery.isNotEmpty()) {
+                                service.uiState.value =
+                                    s.copy(clipboardSearchQuery = s.clipboardSearchQuery.dropLast(1))
+                            }
+                        }
+                        // 回车：编码中把原始编码提交进搜索框；空闲时忽略，不触发宿主动作键
+                        key == "enter" -> {
+                            if (composing) service.keyRouter.handleKeyPress("enter", false)
+                        }
+                        // 上滑清空：清搜索框 + RIME 编码；下滑撤回：搜索态禁用
+                        // （普通路径在空闲态会删除宿主输入框内容，必须拦截）
+                        key == "clear_all" -> {
+                            if (s.clipboardSearchQuery.isNotEmpty()) {
+                                service.uiState.value = s.copy(clipboardSearchQuery = "")
+                            }
+                            if (composing) service.keyRouter.handleKeyPress("clear_composition", false)
+                        }
+                        key == "undo_clear" -> {
+                            // no-op
+                        }
+                        // 英文模式字母：直接追加到搜索框（RIME 的 pendingEnglish 路径会
+                        // setComposingText 到宿主输入框，搜索态必须避开）
+                        key.length == 1 && key[0].isLetter() && s.isAsciiMode -> {
+                            val ch = if (isShifted) key.uppercase() else key.lowercase()
+                            service.uiState.value =
+                                s.copy(clipboardSearchQuery = s.clipboardSearchQuery + ch)
+                        }
+                        // 其余按键（中文模式字母、标点、空格、中英切换、清编码等）照常进 RIME，
+                        // 上屏文本由 commitText 重定向，空格空闲态也会经 commitText(" ") 入搜索框
+                        else -> service.keyRouter.handleKeyPress(key, isShifted)
+                    }
+                } else {
+                    service.keyRouter.handleKeyPress(key, isShifted)
+                }
+            },
+            onKeyPressDown = { key ->
+                service.feedbackManager.performKeyPressDownEffect(key, view)
+            },
+            onKeyRelease = { key ->
+                service.feedbackManager.hapticFeedback(view, keyUp = true)
+            },
+            onCandidateSelect = { index, candidate ->
+                service.keyRouter.selectCandidate(index, candidate)
+            },
+            onAssociationSelect = { _, candidate ->
+                service.feedbackManager.performKeyPressEffect(view = view)
+                val cs = service.candidateState.value
+                val pendingEnglish = cs.pendingEnglishText
+                if (pendingEnglish.isEmpty() ||
+                    candidate.startsWith(pendingEnglish, ignoreCase = true)
+                ) {
+                    service.commitText(candidate)
+                    if (pendingEnglish.isNotEmpty()) {
+                        service.candidateState.value = service.candidateState.value.copy(
+                            pendingEnglishText = "",
+                            associationCandidates = emptyList()
+                        )
+                    } else {
+                        service.updateUI()
+                    }
+                }
+            },
+            onClearAssociation = {
+                service.candidateState.value = service.candidateState.value.copy(associationCandidates = emptyList())
+            },
+            onCustomPhraseAction = { word, action ->
+                val mgr = com.kingzcheung.xime.settings.UserPhraseManager
+                val schemaId = service.uiState.value.currentSchemaId
+                // 自动学习词走内存直管（即时、不重建会话）；手动 custom_phrase 走原有重建链路。
+                val isAuto = mgr.isAutoWord(service, schemaId, word)
+                when (action) {
+                    "delete" ->
+                        if (isAuto) {
+                            mgr.deleteAutoWord(service, schemaId, word)
+                            // 立即按当前编码重合并候选：被删词当场消失。
+                            service.updateUI()
+                        } else {
+                            mgr.deleteWord(service, schemaId, word)
+                        }
+                    "moveEnd" ->
+                        if (isAuto) {
+                            mgr.moveAutoWordToEnd(service, schemaId, word)
+                            // 立即重合并：该词当场移到 rime 候选之后（列表末尾）。
+                            service.updateUI()
+                        } else {
+                            mgr.moveToEnd(service, schemaId, word)
+                        }
+                }
+            },
+            onToggleDarkMode = { service.toggleDarkMode() },
+            onClipboard = {},
+            onClipboardSelect = { text -> service.textCommit.selectClipboardItem(text) },
+            onClipboardPullRemote = { service.clipboardSyncBridge?.pullOnce() },
+            onClipboardSearchToggle = { active ->
+                service.uiState.value = service.uiState.value.copy(
+                    clipboardSearchActive = active,
+                    // 关闭搜索时清空查询，下次进入重新开始
+                    clipboardSearchQuery = if (active) service.uiState.value.clipboardSearchQuery else ""
+                )
+                // 进入/退出搜索都清空 RIME 组合与候选：
+                // 进入时丢弃宿主里未提交的编码，退出时防止搜索期拼音泄漏到宿主
+                service.keyRouter.postRimeJob {
+                    service.rimeEngine.clearComposition()
+                    service.calculatorEngine.clear()
+                    withContext(Dispatchers.Main) {
+                        if (SettingsPreferences.getInputTextLocation(service) ==
+                            SettingsPreferences.INPUT_TEXT_INPUT_BOX
+                        ) {
+                            service.endComposingInputBox()
+                        }
+                        service.candidateState.value = CandidateState()
+                    }
+                }
+            },
+            onClipboardSearchQueryChange = { query ->
+                service.uiState.value = service.uiState.value.copy(clipboardSearchQuery = query)
+            },
+            onKeyboardTopPositioned = { top -> service.stableKeyboardTopPx = top },
+            onCommitText = { text -> service.textCommit.commitClipboardText(text) },
+            onDeleteText = { count -> service.textCommit.deleteClipboardChars(count) },
+            onQuickSend = {},
+            onKeyboardResize = {
+                val config = service.resources.configuration
+                val isLandscape = config.screenWidthDp > config.screenHeightDp
+                val currentHeight = SettingsPreferences.getKeyboardHeightDp(service, isLandscape)
+                service.uiState.value = service.uiState.value.copy(
+                    showKeyboardResize = true,
+                    resizePreviewHeightDp = currentHeight,
+                )
+            },
+            onReloadConfig = { service.schemaController.reloadConfig() },
+            onSettings = { service.schemaController.openSettings() },
+            onSwitchSchema = { schemaId -> service.schemaController.switchSchema(schemaId) },
+            onToggleSchemaSwitch = { sw -> service.sessionController.toggleSchemaSwitch(sw) },
+            onHideKeyboard = { service.hideKeyboard() },
+            onSwitchKeyboard = {
+                val imm = service.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                @Suppress("DEPRECATION")
+                imm.showInputMethodPicker()
+            },
+            onToolbarEditingAction = { action -> service.schemaController.handleToolbarEditingAction(action) },
+            onCommitImage = { imagePath ->
+                val success = service.textCommit.commitImage(imagePath)
+                if (!success) {
+                    android.widget.Toast.makeText(
+                        service,
+                        "发送失败，已复制到剪贴板",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    service.clipboardManager.copyImageToSystemClipboard(imagePath)
+                }
+            },
+            onVoiceModeChange = { enabled ->
+                if (!enabled) {
+                    // 长按抬手：结束语音会话（提交当前已识别文本并停止识别）
+                    service.endVoiceSession()
+                } else if (!service.uiState.value.isVoiceMode) {
+                    service.uiState.value = service.uiState.value.copy(
+                        isVoiceMode = true,
+                        voiceSticky = false,
+                        voiceButtonState = VoiceButtonState(bottomActive = true),
+                        sttMuteOthers = SettingsPreferences.isSttMuteOthers(service),
+                        voiceRecognizedText = ""
+                    )
+                    service.keyboardViewModel.enterVoice()
+                    service.feedbackManager.performVibration()
+                    service.isTrackingVoiceButtons = true
+                    service.keyboardContainer.enableVoiceButtonTracking()
+                    service.voiceRecordingStarted = true
+                    // 立即提前启动麦克风录音（等 150ms 的话模型常驻时加载极快，
+                    // preStarted 可能还没创建好就被 startRecording 跳过，导致开头丢失）
+                    service.voiceRecognitionHandler.startDelayedPreStart(0)
+                    service.voiceRecognitionHandler.startRecognition()
+                }
+            },
+            onVoiceStickyToggle = {
+                val state = service.uiState.value
+                if (state.isVoiceMode && state.voiceSticky) {
+                    // 常驻语音中：点按空格/再次点击工具栏即结束
+                    service.endVoiceSession()
+                } else if (!state.isVoiceMode) {
+                    // 进入常驻语音：保持正常键盘布局，候选栏显示频谱，空格键轻触结束
+                    service.uiState.value = service.uiState.value.copy(
+                        isVoiceMode = true,
+                        voiceSticky = true,
+                        voiceButtonState = VoiceButtonState(bottomActive = true),
+                        voiceRecognizedText = ""
+                    )
+                    service.voiceRecordingStarted = true
+                    service.voiceRecognitionHandler.startDelayedPreStart(0)
+                    service.voiceRecognitionHandler.startRecognition()
+                }
+            },
+            onPageDown = { service.keyRouter.pageDown() },
+            onPageUp = { service.keyRouter.pageUp() },
+            onCursorMove = { direction ->
+                val ic = service.currentInputConnection
+                if (ic != null && direction != 0) {
+                    if (SettingsPreferences.getInputTextLocation(service) == SettingsPreferences.INPUT_TEXT_INPUT_BOX &&
+                        service.candidateState.value.isComposing
+                    ) {
+                        // 输入框模式：移动光标前先结束 composing 并清空 RIME 组成，
+                        // 避免再次输入时 composing 区域与光标位置错乱
+                        ic.finishComposingText()
+                        service.keyRouter.postRimeJob {
+                            service.rimeEngine.clearComposition()
+                            withContext(Dispatchers.Main) {
+                                service.mainHandler.post { service.updateUI() }
+                            }
+                        }
+                    }
+                    var movedBySelection = false
+                    try {
+                        val req = android.view.inputmethod.ExtractedTextRequest()
+                        val extracted = ic.getExtractedText(req, 0)
+                        if (extracted != null && extracted.selectionStart >= 0) {
+                            val newPos = (extracted.selectionStart + direction)
+                                .coerceIn(0, extracted.text?.length ?: 0)
+                            ic.setSelection(newPos, newPos)
+                            movedBySelection = true
+                        }
+                    } catch (_: Exception) {}
+                    if (!movedBySelection) {
+                        val keyCode = if (direction < 0) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
+                        repeat(abs(direction)) {
+                            ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+                            ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+                        }
+                    }
+                }
+            },
+            onGestureAction = { action, value ->
+                action.execute(service, value)
+            },
+            onUpdateToolbarButtons = { buttons ->
+                SettingsPreferences.setToolbarButtons(service, buttons)
+                service.uiState.value = service.uiState.value.copy(toolbarButtons = buttons)
+            },
+            onKeyboardModeChange = { chineseMode ->
+                if (service.isChineseMode != chineseMode) {
+                    service.isChineseMode = chineseMode
+                    if (!chineseMode) {
+                        service.candidateState.value = service.candidateState.value.copy(associationCandidates = emptyList())
+                    }
+                }
+            },
+            onDismissDeploying = { service.notifyDeploymentStatus(false, "") },
+            onFloatingModeChange = { enabled -> service.schemaController.toggleFloatingMode(enabled, floatingMinY) },
+            onFloatingKeyboardDrag = { dx, dy ->
+                val s = service.uiState.value
+                val screenW = service.resources.configuration.screenWidthDp
+                val screenH = if (state.isFloatingMode) effectiveScreenH else service.resources.configuration.screenHeightDp
+                val portraitWidth = minOf(screenW, screenH)
+                val cardWidth = (portraitWidth * 0.85f).roundToInt()
+                val halfMargin = ((screenW - cardWidth) / 2f).roundToInt()
+                val newX = (s.floatingOffsetX + dx).roundToInt().coerceIn(-halfMargin, halfMargin)
+                val newY_raw = (s.floatingOffsetY + dy).roundToInt()
+                val actualCardH = if (service.currentFloatingCardHeightDp > 0) service.currentFloatingCardHeightDp else service.currentEffectiveKeyboardHeight
+                val maxOffsetY = (screenH - actualCardH).coerceAtLeast(floatingMinY)
+                val newY = newY_raw.coerceIn(0, maxOffsetY)
+                service.uiState.value = s.copy(
+                    floatingOffsetX = newX,
+                    floatingOffsetY = newY,
+                )
+            },
+            onFloatingKeyboardDragEnd = {
+                val s = service.uiState.value
+                val isLandscape = service.resources.configuration.screenWidthDp > service.resources.configuration.screenHeightDp
+                SettingsPreferences.setFloatingOffsetX(service, s.floatingOffsetX, isLandscape)
+                SettingsPreferences.setFloatingOffsetY(service, s.floatingOffsetY, isLandscape)
+            },
+            onT9ReplaceFullPinyin = { pinyin ->
+                service.serviceScope.launch(service.keyProcessingDispatcher) {
+                    when {
+                        pinyin == T9InputController.CLEAR_COMPOSITION_ONLY -> {
+                            service.rimeEngine.clearComposition()
+                        }
+                        pinyin == T9InputController.CLEAR_ALL -> {
+                            service.t9PartialSegments.clear()
+                            service.rimeEngine.setInput("")
+                            service.rimeEngine.clearComposition()
+                        }
+                        pinyin.isEmpty() -> {
+                            service.rimeEngine.clearComposition()
+                        }
+                        else -> {
+                            service.rimeEngine.setInput(pinyin)
+                        }
+                    }
+                    val composition = service.rimeEngine.getComposition()
+                    withContext(Dispatchers.Main) {
+                        service.mainHandler.post { service.sessionController.applyComposition(composition) }
+                    }
+                }
+            },
+            onT9RightCommitUndone = { count ->
+                // 半提交文本在 composing 区域时无法用 deleteSurroundingText 删除，
+                // 需通过 endComposingInputBox 清空，交由后续 applyComposition 重建。
+                if (SettingsPreferences.getInputTextLocation(service)
+                    == SettingsPreferences.INPUT_TEXT_INPUT_BOX) {
+                    service.endComposingInputBox()
+                } else {
+                    service.currentInputConnection?.deleteSurroundingText(count, 0)
+                }
+                // undo 联动：撤销 right commit 段时回滚用户词典调频。
+                val undone = service.t9PartialSegments.removeLastOrNull()
+                if (undone != null) {
+                    service.serviceScope.launch(service.keyProcessingDispatcher) {
+                        service.rimeEngine.t9Forget(undone.text, undone.pinyin)
+                    }
+                }
+            },
+            onT9RefreshComposition = { composition ->
+                // composition 由 T9 控制器在 flush 后一次取回并传入，
+                // 避免在此再次 getComposition 造成重复 JNI 往返。
+                service.mainHandler.post { service.sessionController.applyComposition(composition) }
+            },
+            onT9SwitchAway = {
+                service.keyRouter.postRimeJob {
+                    service.sessionController.commitFirstCandidateAndClearT9()
+                }
+            },
+            onCommitCandidateBeforeModeChange = {
+                val cs = service.candidateState.value
+                if (cs.pendingEnglishText.isNotEmpty()) {
+                    service.commitText(cs.pendingEnglishText)
+                    service.candidateState.value = cs.copy(
+                        pendingEnglishText = "",
+                        associationCandidates = emptyList()
+                    )
+                } else if (!isT9Schema(service.uiState.value.currentSchemaId)
+                    && cs.isComposing) {
+                    if (cs.candidates.isNotEmpty()) {
+                        if (service.rimeEngine.selectCandidate(0)) {
+                            val text = service.rimeEngine.commit()
+                            if (text.isNotEmpty()) service.commitText(text)
+                        }
+                    } else if (cs.preeditText.isNotEmpty()) {
+                        service.commitText(cs.preeditText)
+                        service.rimeEngine.clearComposition()
+                    }
+                }
+            },
+            onShowQuickSendForm = {
+                val current = service.uiState.value
+                service.uiState.value = current.copy(
+                    showQuickSendForm = true,
+                    quickSendFormFocused = true,
+                    quickSendEditingItemId = null,
+                    quickSendEditingItemText = "",
+                    enterKeyText = "确定",
+                )
+            },
+            onQuickSendEditItem = { id, text ->
+                service.uiState.value = service.uiState.value.copy(
+                    showQuickSendForm = true,
+                    quickSendFormFocused = true,
+                    quickSendEditingItemId = id,
+                    quickSendEditingItemText = text,
+                    enterKeyText = "确定",
+                )
+                QuickSendFormEditTextHolder.editText?.let { et ->
+                    et.setText(text)
+                    et.setSelection(text.length)
+                }
+            },
+            onHideQuickSendForm = {
+                service.uiState.value = service.uiState.value.copy(
+                    showQuickSendForm = false,
+                    quickSendFormFocused = false,
+                    quickSendEditingItemId = null,
+                    quickSendEditingItemText = "",
+                    enterKeyText = "发送",
+                )
+                QuickSendFormEditTextHolder.editText = null
+                service.keyboardViewModel.showOverlay(OverlayRoute.Clipboard(1))
+            },
+            onQuickSendFormFocusChange = { focused: Boolean ->
+                service.uiState.value = service.uiState.value.copy(
+                    quickSendFormFocused = focused,
+                    enterKeyText = if (focused) "确定" else "发送",
+                )
+            },
+        )
+    }
+}
