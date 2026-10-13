@@ -9,6 +9,12 @@ data class RimeCandidate(
     val comment: String
 )
 
+data class RimeCandidatePreview(
+    val textBeforeSelection: String,
+    val selectedText: String,
+    val textAfterSelection: String,
+)
+
 data class RimeCandidatePageInfo(
     val pageNo: Int,
     val pageSize: Int,
@@ -326,6 +332,23 @@ class RimeEngine {
             RimeCandidatePageInfo(
                 pageNo = pageInfo.getOrElse(0) { -1 },
                 pageSize = pageInfo.getOrElse(1) { 0 },
+            )
+        }
+    }
+
+    fun getCandidatePreview(
+        index: Int,
+        expectedText: String,
+        expectedComment: String? = null,
+    ): RimeCandidatePreview? {
+        return tryLocked(null) {
+            if (!nativeHasSession()) return@tryLocked null
+            val preview = nativeGetCandidatePreview(index, expectedText, expectedComment)
+                ?: return@tryLocked null
+            RimeCandidatePreview(
+                textBeforeSelection = preview.getOrElse(0) { "" },
+                selectedText = preview.getOrElse(1) { "" },
+                textAfterSelection = preview.getOrElse(2) { "" },
             )
         }
     }
@@ -696,6 +719,11 @@ class RimeEngine {
     private external fun nativeGetCandidates(): Array<String>?
     private external fun nativeGetCandidatesWithComments(): Array<Array<String>>?
     private external fun nativeGetCandidatePageInfo(): IntArray?
+    private external fun nativeGetCandidatePreview(
+        index: Int,
+        expectedText: String,
+        expectedComment: String?
+    ): Array<String>?
     private external fun nativeGetInput(): String?
     private external fun nativeGetComposition(): RimeComposition
     private external fun nativeSelectCandidate(

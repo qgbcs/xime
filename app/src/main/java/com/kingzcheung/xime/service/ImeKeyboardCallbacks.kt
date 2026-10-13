@@ -152,6 +152,7 @@ internal fun rememberImeKeyboardCallbacks(
                     service.rimeEngine.clearComposition()
                     service.calculatorEngine.clear()
                     withContext(Dispatchers.Main) {
+                        service.partialCandidateSegments.clear()
                         if (SettingsPreferences.getInputTextLocation(service) ==
                             SettingsPreferences.INPUT_TEXT_INPUT_BOX
                         ) {
@@ -326,6 +327,7 @@ internal fun rememberImeKeyboardCallbacks(
                         }
                         pinyin == T9InputController.CLEAR_ALL -> {
                             service.t9PartialSegments.clear()
+                            service.partialCandidateSegments.clear()
                             service.rimeEngine.setInput("")
                             service.rimeEngine.clearComposition()
                         }

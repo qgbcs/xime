@@ -78,6 +78,7 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         }
 
         val isT9Schema = isT9Schema(service.uiState.value.currentSchemaId)
+        val partialCandidateText = service.partialCandidateSegments.joinToString("") { it.text }
         // T9 候选词过滤：根据左侧选择历史过滤不匹配的候选词
         val (t9FilteredTexts, t9FilteredComments) = if (isT9Schema) {
             service.keyboardCallbacks?.onFilterT9Candidates?.invoke(filteredTexts, filteredComments)
@@ -100,12 +101,12 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             displayComments = display.displayComments
             isComposing = display.isComposing
         } else {
-            // 非 T9 方案（如双拼）使用原始输入文本显示，
-            // 避免显示 rime speller 展开后的编码（如双拼 vjv → zhan b）
-            displayText = inputText
+            // 部分选中的候选保持在 composing 区；Rime 只处理尚未选择的尾码。
+            // 普通输入仍显示原始输入，避免显示 speller 展开的编码。
+            displayText = if (partialCandidateText.isNotEmpty()) partialCandidateText else inputText
             displayCandidates = filteredTexts
             displayComments = filteredComments
-            isComposing = inputText.isNotEmpty()
+            isComposing = inputText.isNotEmpty() || partialCandidateText.isNotEmpty()
         }
 
         // 用户开始实际输入时，清除候选栏中残留的 inline suggestions
@@ -113,12 +114,14 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             service.dismissInlineSuggestions()
         }
 
+        val candidateLookupInput =
+            if (partialCandidateText.isNotEmpty() && !isT9Schema) inputText else displayText
         val merged = mergeAutoCandidates(
-            displayText, isAsciiMode, isT9Schema, displayCandidates, displayComments
+            candidateLookupInput, isAsciiMode, isT9Schema, displayCandidates, displayComments
         )
 
         service.candidateState.value = service.candidateState.value.copy(
-            inputText = displayText,
+            inputText = if (partialCandidateText.isNotEmpty() && !isT9Schema) inputText else displayText,
             preeditText = displayText,
             candidates = merged.candidates,
             candidateComments = merged.comments,
@@ -179,6 +182,7 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         // 非 T9 方案（如双拼）使用原始输入文本显示，
         // 避免显示 rime speller 展开后的编码（如双拼 i → ch）
         val isT9Schema = isT9Schema(service.uiState.value.currentSchemaId)
+        val partialCandidateText = service.partialCandidateSegments.joinToString("") { it.text }
         // T9 候选词过滤：根据左侧选择历史（全拼/简拼）过滤不匹配的候选词
         val (t9FilteredTexts, t9FilteredComments) = if (isT9Schema) {
             service.keyboardCallbacks?.onFilterT9Candidates?.invoke(filteredTexts, filteredComments)
@@ -205,10 +209,16 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             val hasExtraContent = result.preeditText.any { c ->
                 !c.isWhitespace() && c != '\'' && !lowerInput.contains(c.lowercaseChar())
             }
-            displayText = if (result.preeditText.isNotEmpty() && hasExtraContent) result.preeditText else result.inputText
+            displayText = if (partialCandidateText.isNotEmpty()) {
+                partialCandidateText
+            } else if (result.preeditText.isNotEmpty() && hasExtraContent) {
+                result.preeditText
+            } else {
+                result.inputText
+            }
             displayCandidates = filteredTexts
             displayComments = filteredComments
-            isComposing = result.inputText.isNotEmpty()
+            isComposing = result.inputText.isNotEmpty() || partialCandidateText.isNotEmpty()
         }
 
         // 用户开始实际输入时，清除候选栏中残留的 inline suggestions
@@ -216,12 +226,14 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
             service.dismissInlineSuggestions()
         }
 
+        val candidateLookupInput =
+            if (partialCandidateText.isNotEmpty() && !isT9Schema) result.inputText else displayText
         val merged = mergeAutoCandidates(
-            displayText, isAsciiMode, isT9Schema, displayCandidates, displayComments
+            candidateLookupInput, isAsciiMode, isT9Schema, displayCandidates, displayComments
         )
 
         service.candidateState.value = service.candidateState.value.copy(
-            inputText = displayText,
+            inputText = if (partialCandidateText.isNotEmpty() && !isT9Schema) result.inputText else displayText,
             preeditText = displayText,
             candidates = merged.candidates,
             candidateComments = merged.comments,
@@ -413,6 +425,7 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
                 t9SelectedCandidatePinyin = ""
             )
             service.t9PartialSegments.clear()
+            service.partialCandidateSegments.clear()
             service.candidateState.value = service.candidateState.value.copy(
                 inputText = "",
                 preeditText = "",

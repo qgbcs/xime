@@ -456,6 +456,66 @@ public:
         return true;
     }
 
+    bool getCandidatePreview(
+        int index,
+        const std::string& expectedText,
+        const std::string* expectedComment,
+        std::string& textBeforeSelection,
+        std::string& selectedText,
+        std::string& textAfterSelection
+    ) {
+        if (!rime || !session_id_ || !rime->get_candidate_preview ||
+            !rime->highlight_candidate) {
+            return false;
+        }
+
+        RIME_STRUCT(RimeContext, context);
+        if (!rime->get_context(session_id_, &context)) return false;
+
+        const int pageNo = context.menu.page_no;
+        const int pageSize = context.menu.page_size;
+        const int highlightedIndex = context.menu.highlighted_candidate_index;
+        std::vector<std::pair<std::string, std::string>> candidates;
+        candidates.reserve(context.menu.num_candidates);
+        for (int i = 0; i < context.menu.num_candidates; ++i) {
+            const auto& candidate = context.menu.candidates[i];
+            candidates.emplace_back(
+                candidate.text ? candidate.text : "",
+                candidate.comment ? candidate.comment : ""
+            );
+        }
+        rime->free_context(&context);
+
+        const int resolvedIndex = xime::resolveCandidateIndex(
+            candidates, index, &expectedText, expectedComment
+        );
+        if (resolvedIndex < 0 || pageNo < 0 || pageSize <= 0) return false;
+
+        const size_t absoluteIndex =
+            static_cast<size_t>(pageNo) * static_cast<size_t>(pageSize) +
+            static_cast<size_t>(resolvedIndex);
+        if (!rime->highlight_candidate(session_id_, absoluteIndex)) return false;
+
+        RIME_STRUCT(RimeCandidatePreview, preview);
+        const bool hasPreview = rime->get_candidate_preview(session_id_, &preview);
+        if (hasPreview) {
+            textBeforeSelection = preview.text_before_selection ?
+                preview.text_before_selection : "";
+            selectedText = preview.selected_text ? preview.selected_text : "";
+            textAfterSelection = preview.text_after_selection ?
+                preview.text_after_selection : "";
+            rime->free_candidate_preview(&preview);
+        }
+
+        if (highlightedIndex >= 0 && highlightedIndex < pageSize) {
+            const size_t previousAbsoluteIndex =
+                static_cast<size_t>(pageNo) * static_cast<size_t>(pageSize) +
+                static_cast<size_t>(highlightedIndex);
+            rime->highlight_candidate(session_id_, previousAbsoluteIndex);
+        }
+        return hasPreview;
+    }
+
     bool selectCandidate(
         int index,
         const std::string* expectedText = nullptr,
@@ -1350,6 +1410,54 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetCandidatePageInfo(
     jint values[] = {pageNo, pageSize};
     jintArray result = env->NewIntArray(2);
     if (result) env->SetIntArrayRegion(result, 0, 2, values);
+    return result;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetCandidatePreview(
+    JNIEnv* env,
+    jobject thiz,
+    jint index,
+    jstring expected_text,
+    jstring expected_comment
+) {
+    if (!expected_text) return nullptr;
+
+    const char* textValue = env->GetStringUTFChars(expected_text, nullptr);
+    if (!textValue) return nullptr;
+    const std::string expectedText(textValue);
+    env->ReleaseStringUTFChars(expected_text, textValue);
+
+    std::string expectedComment;
+    const std::string* expectedCommentPtr = nullptr;
+    if (expected_comment) {
+        const char* commentValue = env->GetStringUTFChars(expected_comment, nullptr);
+        if (!commentValue) return nullptr;
+        expectedComment = commentValue;
+        env->ReleaseStringUTFChars(expected_comment, commentValue);
+        expectedCommentPtr = &expectedComment;
+    }
+
+    std::string textBeforeSelection;
+    std::string selectedText;
+    std::string textAfterSelection;
+    if (!Rime::Instance().getCandidatePreview(
+            index, expectedText, expectedCommentPtr,
+            textBeforeSelection, selectedText, textAfterSelection)) {
+        return nullptr;
+    }
+
+    jclass stringClass = env->FindClass("java/lang/String");
+    jobjectArray result = env->NewObjectArray(3, stringClass, nullptr);
+    if (!result) return nullptr;
+    const std::string values[] = {
+        textBeforeSelection, selectedText, textAfterSelection
+    };
+    for (jsize i = 0; i < 3; ++i) {
+        jstring value = env->NewStringUTF(values[i].c_str());
+        env->SetObjectArrayElement(result, i, value);
+        env->DeleteLocalRef(value);
+    }
     return result;
 }
 

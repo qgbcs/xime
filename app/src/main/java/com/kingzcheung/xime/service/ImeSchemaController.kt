@@ -46,9 +46,11 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
                 service.keyRouter.selectCandidateAsync(0)
             } else {
                 val input = candState.inputText
-                if (input.isNotEmpty()) {
+                val fullInput = service.partialCandidateSegments.joinToString("") { it.text } + input
+                if (fullInput.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
-                        service.commitText(input)
+                        service.commitText(fullInput)
+                        service.partialCandidateSegments.clear()
                     }
                     service.rimeEngine.clearComposition()
                 }

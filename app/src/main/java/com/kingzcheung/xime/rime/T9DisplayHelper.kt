@@ -73,3 +73,28 @@ fun resolveRimeCandidateIndex(
     val rawIndex = rawCandidates.indexOf(selectedCandidate)
     return rawIndex
 }
+
+data class CandidateInputPrefix(
+    val selectedInput: String,
+    val remainingInput: String,
+    val selectedText: String,
+)
+
+fun resolveCandidateInputPrefix(
+    input: String,
+    preview: RimeCandidatePreview,
+    expectedText: String,
+): CandidateInputPrefix? {
+    val remainingInput = preview.textAfterSelection
+    if (preview.selectedText != expectedText || remainingInput.isEmpty() ||
+        !input.endsWith(remainingInput)
+    ) {
+        return null
+    }
+    val selectedInput = input.removeSuffix(remainingInput)
+    val selectedText = preview.textBeforeSelection + preview.selectedText
+    if (selectedInput.isEmpty() || selectedInput == input || selectedText.isEmpty()) {
+        return null
+    }
+    return CandidateInputPrefix(selectedInput, remainingInput, selectedText)
+}

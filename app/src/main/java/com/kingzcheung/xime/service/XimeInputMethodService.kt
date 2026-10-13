@@ -142,6 +142,8 @@ object QuickSendFormEditTextHolder {
  */
 data class T9PartialSegment(val text: String, val pinyin: String)
 
+data class PartialCandidateSegment(val text: String, val inputCode: String)
+
 class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner, ActionExecutor {
 
     companion object {
@@ -233,6 +235,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     internal var lastClearedText: String = ""
     /** 累积的 partial commit 段列表（多段选词场景下逐段追加，文本+拼音同源，供调频/回滚） */
     internal val t9PartialSegments = mutableListOf<T9PartialSegment>()
+    internal val partialCandidateSegments = mutableListOf<PartialCandidateSegment>()
     /** 键盘回调引用，用于在 RIME selectCandidate 前同步通知 T9 控制器 */
     internal var keyboardCallbacks: KeyboardCallbacks? = null
     internal var isChineseMode = true
@@ -357,6 +360,8 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         cs.candidates.forEach { candidatesArray.put(it) }
         val commentsArray = org.json.JSONArray()
         cs.candidateComments.forEach { commentsArray.put(it) }
+        val partialCandidatesArray = org.json.JSONArray()
+        partialCandidateSegments.forEach { partialCandidatesArray.put(it.text) }
         val rimeCandidatesArray = org.json.JSONArray()
         rimeEngine.getCandidatesWithComments().forEach { candidate ->
             rimeCandidatesArray.put(
@@ -379,6 +384,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
             .put("candidates", candidatesArray)
             .put("comments", commentsArray)
             .put("rime_candidates", rimeCandidatesArray)
+            .put("partial_candidates", partialCandidatesArray)
             .put("page_no", pageInfo.pageNo)
             .put("page_size", pageInfo.pageSize)
             .put("front", cs.customPhraseCount)
@@ -390,6 +396,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     /** RpcUiController 用的输入/候选直达测试桥实现。 */
     internal val imeTestBridge = object : com.kingzcheung.xime.util.RpcUiController.ImeTestBridge {
         override fun type(code: String): String = runSerialImeTest {
+            partialCandidateSegments.clear()
             val ok = rimeEngine.setInput(code)
             sessionController.applyComposition(rimeEngine.getComposition())
             buildImeSnapshot().put("set_input_ok", ok).toString()
@@ -421,7 +428,11 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                 .put("rime_commit_text", outcome.rimeCommitText)
                 .put("committed_text", outcome.committedText ?: "")
                 .put("fallback_used", outcome.fallbackUsed)
-                .put("selection_matches", outcome.committedText == selectedCandidate)
+                .put("partial_selection", outcome.partialSelection)
+                .put(
+                    "selection_matches",
+                    outcome.partialSelection || outcome.committedText == selectedCandidate
+                )
                 .put("after", after)
                 .toString()
         }
@@ -441,6 +452,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         override fun reset(): String = runSerialImeTest {
             rimeEngine.clearComposition()
             withContext(Dispatchers.Main) {
+                partialCandidateSegments.clear()
                 candidateState.value = CandidateState()
                 endComposingInputBox()
             }
@@ -1397,6 +1409,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                 keyRouter.postRimeJob {
                     rimeEngine.clearComposition()
                     withContext(Dispatchers.Main) {
+                        partialCandidateSegments.clear()
                         mainHandler.post { updateUI() }
                     }
                 }
@@ -1430,6 +1443,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         // state）会触发 restartInput → 此处重建 T9，若残留累积会被 buildT9DisplayState 拼进
         // preedit 回灌输入框（2026-08-07 日志实证：清除后 testText 从 '' 回灌为 '几乎'）。
         t9PartialSegments.clear()
+        partialCandidateSegments.clear()
         debugLog("onStartInput: cleared lastCommittedText")
 
         // 跨进程同步文件日志开关（开关在主进程设置页切换）
@@ -1778,6 +1792,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         calculatorEngine.clear()
         rimeEngine.clearComposition()
         t9PartialSegments.clear()
+        partialCandidateSegments.clear()
         // 输入法隐藏/结束输入：静默停止语音会话，丢弃未识别文本，避免迟到结果写入新输入框
         if (uiState.value.isVoiceMode || voiceRecordingStarted) {
             voiceRecognitionHandler.abandonSession()

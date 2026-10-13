@@ -2,6 +2,9 @@
 
 本文记录简体拼音多页候选选择问题的排查过程、根因、修复方式与桌面回归测试范围。内容只描述程序行为，不包含任何测试设备识别信息。
 
+
+## 案例 1：多页候选与选词状态不同步
+
 ## 问题表现
 
 简体拼音输入 `fu` 后，候选词可以翻到第二页，但点击第二页靠后位置的候选时，可能选中第一页相同位置的词，而不是屏幕上点击的词。排查时以第二页候选“芙”作为可复现例子。这不是单纯的候选排序问题：画面仍显示第二页，而 Rime 内部候选菜单已经回到第一页，UI 与引擎状态不同步。
@@ -60,3 +63,20 @@ Linux 环境需安装 `librime-dev`、`pkg-config`、CMake 与 C++17 编译器�
 构建与测试是两个刻意分开的动作：构建用于生成 APK；只有明确运行上面的脚本，才会执行本文所述候选回归。
 
 `source_fingerprint` 的哈希输入由 `app/build.gradle.kts` 明确列出：`app/src/main/java`、`app/src/main/jni/librime_jni`、`app/src/main/python`、`app/src/main/assets`、`app/src/main/res` 和 `app/src/main/AndroidManifest.xml`。它不含构建时间，也不覆盖本桌面测试目录、`plugin-core` 模块或构建脚本，因此适合区分这些应用源码输入的构建，不应视为整个仓库或全部 APK 依赖的完整校验和。
+
+## 案例 2：点击部分音节候选后保留未选尾码
+
+### 问题表现与真机复现
+
+- 输入 `yimudi` 时，候选栏中能看到“一亩”，但点选后 `selection_accepted=false`，组字串仍是 `yimudi`，没有任何文字上屏。
+- 输入 `ksmkan` 时，候选栏中有“看什么”。旧路径点选后返回 `selection_accepted=true`、`fallback_used=true`，只提交“看什么”，然后清空引擎输入，尾部 `kan` 丢失。
+
+复现使用 `RpcUiController.imeType()`、`imePick()` 和 `imeState()` 走生产候选路径，不通过屏幕坐标推断。真机版本快照的 `git_hash` 为 `e84d188`。重连时第一次 RPC 超时，随后两次成功；上述状态是在成功 RPC 会话中读取到的。
+
+### 期望行为与修复
+
+点击候选时调用 Rime 的 candidate preview，按候选身份临时高亮并读取候选覆盖的输入范围及其后的未选输入。若候选只覆盖前面的音节，且尾码自身仍有有效候选，就只把该候选暂存为 composing 文本、以尾码重建 Rime 输入并刷新候选栏；不向宿主提交，也不清除尾码。最终选完余下候选时，才把暂存文本和最终 commit 一起提交。
+
+例如 `ksmkan` 点“看什么”后，预编辑显示“看什么”，Rime 继续以 `kan` 提供候选；再点选尾码候选后才整体上屏。退格到尾码为空时会恢复前一段编码，清空/换输入会话时则清除暂存候选。若候选已覆盖全部输入，沿用既有完整提交路径。
+
+`resolveCandidateInputPrefix()` 的单元测试覆盖 `ksmkan`/“看什么”→`kan`、`yimudi`/“一亩”→`di`，以及完整输入不误判成部分候选。Android/JNI 构建和在包含修复源码的 APK 上通过 RPC 重复以上两例，仍是设备集成验证；旧设备快照本身不能验证尚未安装的修复。
