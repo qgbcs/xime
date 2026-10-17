@@ -24,7 +24,7 @@ VERSION_CODE="${VERSION_CODE:-20260919}"
 
 APP_CHINESE_NAME="${APP_CHINESE_NAME:-讯飞}"
 APP_NAME="${APP_CHINESE_NAME}输入法"
-APP_ICON_PATH="$PROJECT_DIR/app/icons/iFly_xunfei/ifly.xml"
+APP_ICON_PATH="$PROJECT_DIR/app/icons/iFly_xunfei/ifly.webp"
 
 #APP_NAME="${VERSION_CODE: -4}输入法"
 #APP_ICON_PATH="${APP_ICON_PATH:-$PROJECT_DIR/app/src/main/res/drawable/ic_launcher_foreground.xml}"
@@ -144,8 +144,8 @@ if [[ -d "$source_dir" ]]; then
     mkdir -p "$target_dir"
     # 清掉目标里可能残留的 .git（旧的 submodule 痕迹），否则它还是个 git 仓库
     rm -rf "$target_dir/.git"
-    rsync --delete --delete-excluded \
-          --exclude=.git --exclude=.github --exclude=.venv \
+    rsync --delete \
+          --include='/*.py' --exclude='*' \
           -a "$source_dir/" "$target_dir/" \
         || echo "警告: rsync 返回非零，忽略并继续构建。" >&2
 else

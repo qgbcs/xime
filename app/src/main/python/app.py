@@ -150,7 +150,9 @@ def start(log_path, files_dir=None):
                 globals=globals(),
                 locals=locals(),
             )
-
+        else:
+            http_server = None
+            
         # mqtt_server = server_mqtt.start(config,globals=globals()) if config.get("mqtt_enabled", False) else None
         request_topic = str(config.get("mqtt_request_topic") or server_mqtt.REQUEST_TOPIC)
         reply_topic = str(config.get("mqtt_reply_topic") or server_mqtt.DEFAULT_REPLY_TOPIC)
