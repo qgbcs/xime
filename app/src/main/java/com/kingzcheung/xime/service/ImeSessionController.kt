@@ -23,7 +23,8 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
 
     /**
      * 把自动学习词（前缀匹配）合并进候选：
-     * - 正常词（分值 >=0）前置；降频词（负分）追加到当前 Rime 候选之后；
+     * - 正常词（分值 >=0）只在第一页前置；降频词（负分）移到第二个 Rime 分页；
+     *   只有一个 Rime 分页时，降频词追加到唯一页末尾。
      * - 仅在非 ascii、非 T9、且有字母编码时生效。
      * 注释/候选不假定等长，按索引过滤以避免丢词。
      */
@@ -40,6 +41,7 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         isT9: Boolean,
         rimeCandidates: List<String>,
         rimeComments: List<String>,
+        hasNextPage: Boolean,
     ): MergedResult {
         if (isAsciiMode || isT9 || input.isEmpty()) {
             return MergedResult(rimeCandidates, rimeComments, 0, 0)
@@ -49,6 +51,8 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         val rimePageNo = service.rimeEngine.getCandidatePageInfo().pageNo
         val front = com.kingzcheung.xime.settings.LearnedCandidateIndex
             .frontCandidatesForRimePage(match.front, rimePageNo)
+        val tail = com.kingzcheung.xime.settings.LearnedCandidateIndex
+            .tailCandidatesForRimePage(match.tail, rimePageNo, hasNextPage)
         if (front.isEmpty() && match.tail.isEmpty()) {
             return MergedResult(rimeCandidates, rimeComments, 0, 0)
         }
@@ -56,10 +60,10 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         val keptIndices = rimeCandidates.indices.filterNot { rimeCandidates[it] in removeSet }
         val keptTexts = keptIndices.map { rimeCandidates[it] }
         val keptComments = keptIndices.map { rimeComments.getOrElse(it) { "" } }
-        val outCandidates = front + keptTexts + match.tail
+        val outCandidates = front + keptTexts + tail
         val outComments =
-            List(front.size) { "" } + keptComments + List(match.tail.size) { "" }
-        return MergedResult(outCandidates, outComments, front.size, match.tail.size)
+            List(front.size) { "" } + keptComments + List(tail.size) { "" }
+        return MergedResult(outCandidates, outComments, front.size, tail.size)
     }
 
     internal fun applyComposition(composition: com.kingzcheung.xime.rime.RimeComposition) {
@@ -120,7 +124,12 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         val candidateLookupInput =
             if (partialCandidateText.isNotEmpty() && !isT9Schema) inputText else displayText
         val merged = mergeAutoCandidates(
-            candidateLookupInput, isAsciiMode, isT9Schema, displayCandidates, displayComments
+            candidateLookupInput,
+            isAsciiMode,
+            isT9Schema,
+            displayCandidates,
+            displayComments,
+            hasNextPage,
         )
 
         service.candidateState.value = service.candidateState.value.copy(
@@ -232,7 +241,12 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         val candidateLookupInput =
             if (partialCandidateText.isNotEmpty() && !isT9Schema) result.inputText else displayText
         val merged = mergeAutoCandidates(
-            candidateLookupInput, isAsciiMode, isT9Schema, displayCandidates, displayComments
+            candidateLookupInput,
+            isAsciiMode,
+            isT9Schema,
+            displayCandidates,
+            displayComments,
+            result.hasNextPage,
         )
 
         service.candidateState.value = service.candidateState.value.copy(

@@ -10,6 +10,13 @@ internal object LearnedCandidateIndex {
     fun frontCandidatesForRimePage(front: List<String>, pageNo: Int): List<String> =
         if (pageNo == 0) front else emptyList()
 
+    fun tailCandidatesForRimePage(
+        tail: List<String>,
+        pageNo: Int,
+        hasNextPage: Boolean,
+    ): List<String> =
+        if (pageNo == 1 || (pageNo == 0 && !hasNextPage)) tail else emptyList()
+
     fun parse(line: String): LearnedCandidateEntry? {
         val lastTab = line.lastIndexOf('\t')
         if (lastTab > 0) {

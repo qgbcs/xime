@@ -19,6 +19,22 @@ class LearnedCandidateIndexTest {
     }
 
     @Test
+    fun `demoted learned candidates move to the second Rime page`() {
+        val learnedTail = listOf("cmd")
+
+        assertTrue(LearnedCandidateIndex.tailCandidatesForRimePage(learnedTail, 0, true).isEmpty())
+        assertEquals(learnedTail, LearnedCandidateIndex.tailCandidatesForRimePage(learnedTail, 1, true))
+        assertTrue(LearnedCandidateIndex.tailCandidatesForRimePage(learnedTail, 2, false).isEmpty())
+    }
+
+    @Test
+    fun `demoted learned candidates go to the end when Rime has only one page`() {
+        val learnedTail = listOf("cmd")
+
+        assertEquals(learnedTail, LearnedCandidateIndex.tailCandidatesForRimePage(learnedTail, 0, false))
+    }
+
+    @Test
     fun `legacy english records migrate with their word as input code`() {
         assertEquals(
             LearnedCandidateEntry("hello world", "hello world", 7L),
