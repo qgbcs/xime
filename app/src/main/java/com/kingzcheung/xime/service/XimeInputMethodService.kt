@@ -393,6 +393,83 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
             .put("has_prev", cs.hasPrevPage)
     }
 
+    /** 只读候选调试快照；只报告当前匹配项，不导出完整用户词表。 */
+    internal fun buildImeDiagnostics(): org.json.JSONObject {
+        val snapshot = buildImeSnapshot()
+        val cs = candidateState.value
+        val ui = uiState.value
+        val inputCode = rimeEngine.getInput().ifEmpty { cs.inputText }
+        val learned = com.kingzcheung.xime.settings.UserPhraseManager.matchingLearnedCandidates(
+            this,
+            ui.currentSchemaId,
+            inputCode,
+        )
+        val learnedByWord = learned.associateBy { it.word }
+        val rimeCandidates = rimeEngine.getCandidatesWithComments().map { it.text }
+        val visibleItems = com.kingzcheung.xime.ui.keyboard.EnglishCandidateDisplayPolicy
+            .prepare(cs.candidates.take(20))
+            .associateBy { it.index }
+        val candidateRows = org.json.JSONArray()
+        cs.candidates.forEachIndexed { index, word ->
+            val isFrontLearned = index < cs.customPhraseCount
+            val isTailLearned = cs.demotedPhraseCount > 0 &&
+                index >= cs.candidates.size - cs.demotedPhraseCount
+            val learnedEntry = learnedByWord[word]
+            val visible = visibleItems[index]
+            val source = when {
+                isFrontLearned -> "learned_front"
+                isTailLearned -> "learned_tail"
+                word in rimeCandidates -> "rime"
+                else -> "other"
+            }
+            candidateRows.put(
+                org.json.JSONObject()
+                    .put("index", index)
+                    .put("text", word)
+                    .put("source", source)
+                    .put("frequency_score", learnedEntry?.score ?: org.json.JSONObject.NULL)
+                    .put("learned_input_code", learnedEntry?.inputCode.orEmpty())
+                    .put("shown_on_first_screen", visible != null)
+                    .put("display_text", visible?.displayText.orEmpty())
+                    .put(
+                        "hidden_reason",
+                        when {
+                            visible != null -> ""
+                            index >= 20 -> "first_screen_candidate_limit"
+                            com.kingzcheung.xime.ui.keyboard.EnglishCandidateDisplayPolicy.isEnglishWord(word) ->
+                                "english_candidate_limit"
+                            else -> "not_rendered"
+                        },
+                    ),
+            )
+        }
+        val matchedRows = org.json.JSONArray()
+        learned.forEach { entry ->
+            matchedRows.put(
+                org.json.JSONObject()
+                    .put("input_code", entry.inputCode)
+                    .put("word", entry.word)
+                    .put("frequency_score", entry.score),
+            )
+        }
+        val associations = org.json.JSONArray()
+        cs.associationCandidates.forEach(associations::put)
+        val visibleEnglishCount = visibleItems.values.count {
+            com.kingzcheung.xime.ui.keyboard.EnglishCandidateDisplayPolicy.isEnglishWord(it.candidate)
+        }
+        return snapshot
+            .put("diagnostic_input_code", inputCode)
+            .put("frequency_model", "shared_app_learned_candidates_rime_order_preserved")
+            .put("candidate_diagnostics", candidateRows)
+            .put("matched_learned_candidates", matchedRows)
+            .put("association_candidates", associations)
+            .put("pending_english_text", cs.pendingEnglishText)
+            .put("visible_first_screen_candidate_count", visibleItems.size)
+            .put("visible_first_screen_english_count", visibleEnglishCount)
+            .put("max_english_candidates_first_screen", 2)
+            .put("combined_english_display_limit_when_two", 10)
+    }
+
     /** RpcUiController 用的输入/候选直达测试桥实现。 */
     internal val imeTestBridge = object : com.kingzcheung.xime.util.RpcUiController.ImeTestBridge {
         override fun type(code: String): String = runSerialImeTest {
@@ -461,6 +538,10 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
 
         override fun snapshot(): String = runSerialImeTest {
             buildImeSnapshot().toString()
+        }
+
+        override fun diagnostics(): String = runSerialImeTest {
+            buildImeDiagnostics().toString()
         }
     }
     

@@ -97,3 +97,22 @@ Linux 环境需安装 `librime-dev`、`pkg-config`、CMake 与 C++17 编译器�
 例如 `ksmkan` 点“看什么”后，预编辑显示“看什么”，Rime 继续以 `kan` 提供候选；再点选尾码候选后才整体上屏。退格到尾码为空时会恢复前一段编码，清空/换输入会话时则清除暂存候选。若候选已覆盖全部输入，沿用既有完整提交路径。
 
 `resolveCandidateInputPrefix()` 的单元测试覆盖 `ksmkan`/“看什么”→`kan`、`yimudi`/“一亩”→`di`，以及完整输入不误判成部分候选。Android/JNI 构建和在包含修复源码的 APK 上通过 RPC 重复以上两例，仍是设备集成验证；旧设备快照本身不能验证尚未安装的修复。
+
+## 案例 4：统一中英文应用学习频率与英文首屏显示
+
+完整上屏的 Rime 中英文候选会把当前输入码、词条和使用频率记录到同一应用学习表；中文候选仅在完整提交后学习，部分选词不会把尚未完成的组合误记为完整词。回车原样上屏的英文仍按“输入码等于词条”学习。旧版 `word<TAB>score` 和裸词文件会在读取时兼容，下一次写入时迁移为 `input_code<TAB>word<TAB>score`。
+
+下次输入时，应用按学习记录的输入码前缀匹配，已学习词根据同一套频率分值排序并注入候选栏；未学习的 Rime 候选之间仍完全保留 Rime 原生顺序。因此这是“统一应用学习词频率”，不是把所有内置词典候选的 Rime 权重重新标定成同一数值体系。
+
+主候选栏首屏最多显示两个英文候选。单个英文词超过 10 个 Unicode 码点时保留前缀并用单字符 `…` 省略；若两词显示长度合计超过 10，则优先缩短较长词，必要时再缩短另一词。仅改变显示标签和首屏可见集合：候选状态仍保留原始词条，点击与 RPC 选词使用原始完整词；“更多候选”页面也仍可检查完整候选列表。
+
+新增只读 RPC `RpcUiController.imeDiagnostics()`，返回当前输入下匹配到的学习词与分数、每个候选的来源和输入码、是否显示在首屏及实际显示标签。它只报告当前匹配结果，不导出完整用户词表，也不调用会改写 Rime composition 的探测操作。真机可按以下方式沿生产路径核验：
+
+```python
+from com.kingzcheung.xime.util import RpcUiController
+RpcUiController.imeReset()
+RpcUiController.imeType("international")
+RpcUiController.imeDiagnostics()
+```
+
+Kotlin/JVM 回归测试覆盖旧数据格式迁移、中英文频率共用、输入码前缀匹配、英文候选数量限制、Unicode 安全截短、总显示长度限制以及 UI 标签与原词身份分离。设备验证还应检查 diagnostics 中的 `candidate_diagnostics` 与实际点选后的提交文本一致。

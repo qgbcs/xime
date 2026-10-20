@@ -38,6 +38,8 @@ object RpcUiController {
         fun reset(): String
         /** 只读当前完整输入/候选状态 JSON。 */
         fun snapshot(): String
+        /** 只读候选来源、学习频率和首屏显示映射。 */
+        fun diagnostics(): String
     }
 
     private var imeBridge: ImeTestBridge? = null
@@ -295,4 +297,8 @@ object RpcUiController {
     /** RPC：读当前完整输入/候选状态。 */
     @JvmStatic
     fun imeState(): String = imeBridge?.snapshot() ?: imeUnavailable()
+
+    /** RPC：只读候选来源、学习频率与首屏英文缩略映射。 */
+    @JvmStatic
+    fun imeDiagnostics(): String = imeBridge?.diagnostics() ?: imeUnavailable()
 }

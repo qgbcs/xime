@@ -379,7 +379,7 @@ object PersonalDictManager {
 
     /**
      * 读取当前方案的自动学习词原始行（空行忽略）。
-     * 行格式为 `word<TAB>score`（分值），兼容旧版裸词行（由 UserPhraseManager 解析为 0 分）。
+     * 新格式为 `input_code<TAB>word<TAB>score`，兼容旧格式 `word<TAB>score` 与裸词行。
      */
     fun loadAutoPhrases(context: Context, schemaId: String): List<String> {
         if (schemaId.isBlank()) return emptyList()

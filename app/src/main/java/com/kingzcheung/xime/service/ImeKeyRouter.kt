@@ -827,7 +827,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             if (word.isNotEmpty()) {
                 // 记一次使用：分值 +1，沉底词被连选多次后可逐步回升到前排。
                 com.kingzcheung.xime.settings.UserPhraseManager.bumpAutoWordOnPick(
-                    service, service.uiState.value.currentSchemaId, word
+                    service, service.uiState.value.currentSchemaId, word, candState.inputText
                 )
                 val fullText = service.partialCandidateSegments.joinToString("") { it.text } + word
                 withContext(Dispatchers.Main) { service.commitText(fullText) }
@@ -850,6 +850,11 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         ) {
             candState.candidateComments[effectiveIndex]
         } else null
+        val learnedInputCode = if (!isT9 && !service.uiState.value.isAsciiMode) {
+            service.rimeEngine.getInput()
+        } else {
+            ""
+        }
 
         // 在 RIME 真正 select/commit 之前，先同步通知 T9 控制器消费数字。
         // 控制器返回 true 表示输入序列已被该候选词完整消费，服务层应视为 full commit。
@@ -928,7 +933,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             if (!isT9 && selectedCandidate != null && resolvedRimeIndex >= 0 &&
                 candidatePreview != null && candidatePreview.textAfterSelection.isEmpty()
             ) {
-                return commitVerifiedCandidate(selectedCandidate)
+                return commitVerifiedCandidate(selectedCandidate, learnedInputCode = learnedInputCode)
             }
             return CandidateSelectionOutcome(false, "", null)
         }
@@ -962,7 +967,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             committedText != selectedCandidate &&
             candidatePreview != null && candidatePreview.textAfterSelection.isEmpty()
         ) {
-            return commitVerifiedCandidate(selectedCandidate, committedText)
+            return commitVerifiedCandidate(selectedCandidate, committedText, learnedInputCode)
         }
         // T9 模式下 fullyConsumed 是判断 full/partial commit 的唯一权威：
         // 当控制器明确 partial commit 时，即使 RIME commit() 返回非空文本
@@ -1042,6 +1047,14 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             if (isT9 && fullCommitText.isNotEmpty() && fullCommitPinyin.isNotEmpty()) {
                 service.rimeEngine.t9Memorize(fullCommitText, fullCommitPinyin)
             }
+            if (!isT9 && !service.uiState.value.isAsciiMode && selectedCandidate != null) {
+                com.kingzcheung.xime.settings.UserPhraseManager.learnCandidateSelection(
+                    service,
+                    service.uiState.value.currentSchemaId,
+                    learnedInputCode,
+                    selectedCandidate,
+                )
+            }
             // T9 跳过了 service.rimeEngine.commit()，需显式清除 RIME composition，
             // 防止残留状态影响后续输入（在 service.keyProcessingDispatcher 上执行）。
             if (isT9) service.rimeEngine.clearComposition()
@@ -1084,6 +1097,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
     private suspend fun commitVerifiedCandidate(
         candidate: String,
         rimeCommitText: String = "",
+        learnedInputCode: String = "",
     ): CandidateSelectionOutcome {
         FileLogger.w(
             "ImeKeyRouter",
@@ -1096,6 +1110,14 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             service.commitText(fullCandidate)
             service.candidateState.value = CandidateState()
             service.endComposingInputBox()
+        }
+        if (!service.uiState.value.isAsciiMode) {
+            com.kingzcheung.xime.settings.UserPhraseManager.learnCandidateSelection(
+                service,
+                service.uiState.value.currentSchemaId,
+                learnedInputCode,
+                candidate,
+            )
         }
         return CandidateSelectionOutcome(
             accepted = true,

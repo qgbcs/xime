@@ -144,6 +144,7 @@ fun CandidateBar(
     }
 
     val displayCandidates: List<String>
+    val candidateDisplayItems: List<CandidateDisplayItem>
     val displayAssociation: List<String>
     val displayComments: List<String>
     val hasAnyMore: Boolean
@@ -153,6 +154,7 @@ fun CandidateBar(
     when (val s = state) {
         is CandidateBarState.Idle -> {
             displayCandidates = emptyList()
+            candidateDisplayItems = emptyList()
             displayAssociation = emptyList()
             displayComments = emptyList()
             hasAnyMore = false
@@ -161,6 +163,7 @@ fun CandidateBar(
         is CandidateBarState.ChineseCandidates -> {
             val taken = s.candidates.take(20)
             displayCandidates = taken
+            candidateDisplayItems = EnglishCandidateDisplayPolicy.prepare(taken)
             displayComments = s.comments
             hasAnyMore = s.hasMore
             showLeftIcon = false
@@ -176,8 +179,8 @@ fun CandidateBar(
                     }
                     val leftSidePx = with(density) { rowPaddingPx + 32.dp.toPx() }
                     val lazyRowWidthPx = screenWidthPx - leftSidePx - rightSidePx
-                    val regularWidthPx = taken.sumOf { c ->
-                        measureText(c).toDouble() + itemPaddingPx
+                    val regularWidthPx = candidateDisplayItems.sumOf { item ->
+                        measureText(item.displayText).toDouble() + itemPaddingPx
                     }.toFloat()
                     val dividerWidthPx = with(density) { 9.dp.toPx() }
                     val availablePx = lazyRowWidthPx - regularWidthPx - dividerWidthPx
@@ -198,6 +201,7 @@ fun CandidateBar(
         }
         is CandidateBarState.AssociationOnly -> {
             displayCandidates = emptyList()
+            candidateDisplayItems = emptyList()
             displayAssociation = s.candidates.take(PredictionManager.MAX_ASSOCIATION_COUNT)
             hasAnyMore = s.hasMore
             showLeftIcon = false
@@ -205,6 +209,9 @@ fun CandidateBar(
         }
         is CandidateBarState.EnglishCandidates -> {
             displayCandidates = s.candidates.take(20)
+            candidateDisplayItems = displayCandidates.mapIndexed { index, candidate ->
+                CandidateDisplayItem(index, candidate, candidate)
+            }
             displayComments = s.comments
             displayAssociation = emptyList()
             hasAnyMore = false
@@ -212,6 +219,9 @@ fun CandidateBar(
         }
         is CandidateBarState.ClipboardDisplay -> {
             displayCandidates = s.candidates.take(20)
+            candidateDisplayItems = displayCandidates.mapIndexed { index, candidate ->
+                CandidateDisplayItem(index, candidate, candidate)
+            }
             displayComments = emptyList()
             displayAssociation = emptyList()
             hasAnyMore = false
@@ -219,6 +229,9 @@ fun CandidateBar(
         }
         is CandidateBarState.Calculator -> {
             displayCandidates = s.candidates.take(20)
+            candidateDisplayItems = displayCandidates.mapIndexed { index, candidate ->
+                CandidateDisplayItem(index, candidate, candidate)
+            }
             displayComments = s.comments
             displayAssociation = emptyList()
             hasAnyMore = false
@@ -231,7 +244,7 @@ fun CandidateBar(
     }
 
     val candidateListState = rememberLazyListState()
-    LaunchedEffect(displayCandidates) {
+    LaunchedEffect(candidateDisplayItems) {
         candidateListState.scrollToItem(0)
     }
 
@@ -408,23 +421,24 @@ fun CandidateBar(
                 state = candidateListState,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                itemsIndexed(displayCandidates, key = { index, _ -> index }) { index, candidate ->
+                itemsIndexed(candidateDisplayItems, key = { _, item -> item.index }) { _, item ->
+                    val candidate = item.candidate
                     val isCustom = callbacks.onCustomPhraseAction != null &&
                         candidate in customPhraseWords
                     Box {
                         CandidateItem(
-                            text = candidate,
-                            index = index,
-                            onClick = { callbacks.onCandidateSelect(index, candidate) },
+                            text = item.displayText,
+                            index = item.index,
+                            onClick = { callbacks.onCandidateSelect(item.index, candidate) },
                             textColor = visuals.textColor,
                             comment = if (showComments) {
                                 when (val s = state) {
-                                    is CandidateBarState.ChineseCandidates -> s.comments.getOrElse(index) { "" }
-                                    is CandidateBarState.EnglishCandidates -> s.comments.getOrElse(index) { "" }
+                                    is CandidateBarState.ChineseCandidates -> s.comments.getOrElse(item.index) { "" }
+                                    is CandidateBarState.EnglishCandidates -> s.comments.getOrElse(item.index) { "" }
                                     else -> ""
                                 }
                             } else "",
-                            isSelected = index == 0,
+                            isSelected = item.index == 0,
                             accentColor = visuals.accentColor,
                             selectedTextColor = visuals.selectedTextColor,
                             fontSize = candidateTextSize.sp,
