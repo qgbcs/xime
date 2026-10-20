@@ -46,6 +46,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupProperties
 
 data class CandidatePageState(
     val candidates: List<String>,
@@ -213,7 +214,10 @@ fun CandidatePage(
                                         onClick = { callbacks.onCandidateSelect(index, candidate) },
                                         onLongClick = if (isCustom) {
                                             {
-                                                callbacks.onUiDiagnosticEvent?.invoke("candidate_long_press", candidate)
+                                                callbacks.onUiDiagnosticEvent?.invoke(
+                                                    "candidate_long_press",
+                                                    "source=candidate_page;candidate=$candidate"
+                                                )
                                                 longPressedWord = candidate
                                             }
                                         } else null,
@@ -222,14 +226,21 @@ fun CandidatePage(
                                     if (isCustom) {
                                         DropdownMenu(
                                             expanded = longPressedWord == candidate,
+                                            properties = PopupProperties(focusable = false),
                                             onDismissRequest = {
-                                                callbacks.onUiDiagnosticEvent?.invoke("candidate_menu_dismissed", candidate)
+                                                callbacks.onUiDiagnosticEvent?.invoke(
+                                                    "candidate_menu_dismissed",
+                                                    "source=candidate_page;candidate=$candidate;popup_focusable=false"
+                                                )
                                                 longPressedWord = null
                                             }
                                         ) {
                                             LaunchedEffect(longPressedWord == candidate) {
                                                 if (longPressedWord == candidate) {
-                                                    callbacks.onUiDiagnosticEvent?.invoke("candidate_menu_shown", candidate)
+                                                    callbacks.onUiDiagnosticEvent?.invoke(
+                                                        "candidate_menu_shown",
+                                                        "source=candidate_page;candidate=$candidate;popup_focusable=false"
+                                                    )
                                                 }
                                             }
                                             DropdownMenuItem(
@@ -237,7 +248,7 @@ fun CandidatePage(
                                                 onClick = {
                                                     callbacks.onUiDiagnosticEvent?.invoke(
                                                         "candidate_menu_selected",
-                                                        "$candidate:moveSecondPage"
+                                                        "source=candidate_page;candidate=$candidate;action=moveSecondPage"
                                                     )
                                                     longPressedWord = null
                                                     callbacks.onCustomPhraseAction?.invoke(
@@ -251,7 +262,7 @@ fun CandidatePage(
                                                 onClick = {
                                                     callbacks.onUiDiagnosticEvent?.invoke(
                                                         "candidate_menu_selected",
-                                                        "$candidate:delete"
+                                                        "source=candidate_page;candidate=$candidate;action=delete"
                                                     )
                                                     longPressedWord = null
                                                     callbacks.onCustomPhraseAction?.invoke(

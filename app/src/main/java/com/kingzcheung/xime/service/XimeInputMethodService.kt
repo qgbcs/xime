@@ -9,6 +9,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewTreeObserver
 import android.view.inputmethod.CursorAnchorInfo
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -165,6 +166,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
 
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val savedStateRegistryController = SavedStateRegistryController.create(this)
+    private var imeWindowFocusListener: ViewTreeObserver.OnWindowFocusChangeListener? = null
 
     override val lifecycle: Lifecycle
         get() = lifecycleRegistry
@@ -554,7 +556,10 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     internal fun buildImeUiSnapshot(): org.json.JSONObject {
         val cs = candidateState.value
         val editor = currentInputEditorInfo
-        val decor = window.window?.decorView
+        val imeWindow = window.window
+        val decor = imeWindow?.decorView
+        val windowAttributes = imeWindow?.attributes
+        val windowFlags = windowAttributes?.flags ?: 0
         val candidateSummary = org.json.JSONArray()
         cs.candidates.take(8).forEach(candidateSummary::put)
         return org.json.JSONObject()
@@ -562,6 +567,25 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
             .put("input_view_shown", isInputViewShown)
             .put("window_decor_shown", decor?.isShown ?: false)
             .put("window_visibility", decor?.visibility ?: View.GONE)
+            .put("window_focus", org.json.JSONObject()
+                .put("has_window_focus", decor?.hasWindowFocus() ?: false)
+                .put("decor_has_focus", decor?.hasFocus() ?: false)
+                .put("decor_is_focused", decor?.isFocused ?: false)
+                .put("current_focus_view", imeWindow?.currentFocus?.javaClass?.name ?: ""))
+            .put("ime_window", org.json.JSONObject()
+                .put("attached", decor?.isAttachedToWindow ?: false)
+                .put("type", windowAttributes?.type ?: 0)
+                .put("flags", windowFlags)
+                .put("flags_hex", "0x${Integer.toHexString(windowFlags)}")
+                .put(
+                    "not_focusable",
+                    windowFlags and android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE != 0
+                )
+                .put(
+                    "alt_focusable_ime",
+                    windowFlags and android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM != 0
+                )
+                .put("soft_input_mode", windowAttributes?.softInputMode ?: 0))
             .put("has_input_connection", currentInputConnection != null)
             .put("editor", org.json.JSONObject()
                 .put("attached", editor != null)
@@ -709,8 +733,13 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
                 android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
         savedStateRegistryController.performRestore(null)
-        window.window?.decorView?.setViewTreeLifecycleOwner(this)
-        window.window?.decorView?.setViewTreeSavedStateRegistryOwner(this)
+        window.window?.decorView?.let { decor ->
+            decor.setViewTreeLifecycleOwner(this)
+            decor.setViewTreeSavedStateRegistryOwner(this)
+            imeWindowFocusListener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+                recordImeUiTrace("onWindowFocusChanged", "hasWindowFocus=$hasFocus")
+            }.also(decor.viewTreeObserver::addOnWindowFocusChangeListener)
+        }
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         
@@ -1978,6 +2007,12 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
     }
 
     override fun onDestroy() {
+        imeWindowFocusListener?.let { listener ->
+            window.window?.decorView?.viewTreeObserver
+                ?.takeIf { it.isAlive }
+                ?.removeOnWindowFocusChangeListener(listener)
+        }
+        imeWindowFocusListener = null
         super.onDestroy()
         com.kingzcheung.xime.util.RpcUiController.detachIme(imeTestBridge)
         sharedPrefsListener?.let {

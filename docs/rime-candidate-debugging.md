@@ -133,12 +133,18 @@ Kotlin/JVM 回归测试覆盖旧数据格式迁移、中英文频率共用、输
 
 ```python
 from com.kingzcheung.xime.util import RpcUiController
-RpcUiController.imeUiTrace(True)  # 清空旧事件，返回清空前的记录
+RpcUiController.imeUiDiagnostics() # 一次读取当前窗口快照及最近 50 条 UI 事件，不清空记录
 RpcUiController.imeUiSnapshot()   # 当前窗口、编辑器和输入/候选摘要
 # 在设备上操作：长按候选、选择菜单项，再按 c 和 x
-RpcUiController.imeUiTrace()      # 读取记录，不清空
+RpcUiController.imeUiTrace()      # 读取完整环形记录，不清空
 ```
 
-`imeUiSnapshot()` 报告 `input_view_shown`、窗口 decor 可见状态、输入连接和编辑器元数据，以及当前输入、候选数量和前 8 个候选。`imeUiTrace(clear)` 为最多 300 条的环形记录；每条包含 wall-clock 与 elapsed-realtime 时间戳，以及当时的窗口/编辑器/输入状态。记录事件包含 `key_touch_down`、`key_touch_up`、`candidate_long_press`、`candidate_menu_shown`、`candidate_menu_dismissed`、`candidate_menu_selected`、`hideKeyboard`、`onStartInputView`、`onFinishInputView`、`onWindowShown` 和 `onWindowHidden`。`hideKeyboard` 事件的 `detail` 标明调用来源。
+`imeUiSnapshot()` 报告 `input_view_shown`、窗口 decor 可见状态、窗口焦点、IME 窗口 flags/soft-input mode、输入连接和编辑器元数据，以及当前输入、候选数量和前 8 个候选。`imeUiDiagnostics()` 将快照与 trace 容量、总条数和最近 50 个事件合并返回，适合先读现场而不清除记录。`imeUiTrace(clear)` 为最多 300 条的环形记录；每条包含 wall-clock 与 elapsed-realtime 时间戳，以及当时的窗口/焦点/编辑器/输入状态。记录事件包含 `key_touch_down`、`key_touch_up`、`candidate_long_press`、`candidate_menu_shown`、`candidate_menu_dismissed`、`candidate_menu_selected`、`onWindowFocusChanged`、`hideKeyboard`、`onStartInputView`、`onFinishInputView`、`onWindowShown` 和 `onWindowHidden`。菜单事件的 `detail` 标明来源是 `candidate_bar` 还是 `candidate_page`，并报告 Popup 是否可聚焦；`hideKeyboard` 事件的 `detail` 标明调用来源。
 
-这两个接口不模拟触摸，不会主动触发隐藏窗口或修改输入状态。建议先调用 `imeUiTrace(True)`，再现场操作复现，最后读取 `imeUiTrace()`；若窗口隐藏但没有 `hideKeyboard` 事件，生命周期事件仍可帮助判断是否由系统/宿主隐藏。`imeKey()` 仍仅用于 Rime 按键管线验证，不等同于真实 UI 触摸。
+这些接口不模拟触摸，不会主动触发隐藏窗口或修改输入状态。建议保留当前记录并读取 `imeUiDiagnostics()` 或 `imeUiTrace()`；若需要从头捕获新一轮复现，才调用 `imeUiTrace(True)` 清空旧记录。若窗口隐藏但没有 `hideKeyboard` 事件，生命周期和焦点事件仍可帮助判断是否由系统/宿主隐藏。`imeKey()` 仍仅用于 Rime 按键管线验证，不等同于真实 UI 触摸。
+
+## 案例 6：候选长按菜单导致 IME 窗口被系统隐藏
+
+此前保留的设备 trace 中，横栏英文候选 `claude` 和 `com` 的长按菜单出现后分别在 62 ms、71 ms 收到 `onFinishInputView(false)` 与 `onWindowHidden`，没有 `hideKeyboard` 或菜单选择事件。`onWindowHidden()` 随后清理 composing 与候选状态，因此键盘恢复时输入已丢失。源码中横栏和展开候选页菜单都使用 Compose `DropdownMenu`，其 Popup 默认可获取焦点；焦点 Popup 出现在 IME 上方时会让 Android 结束输入视图。
+
+修复在横栏和展开页两个菜单上都显式设置 `PopupProperties(focusable = false)`，使菜单仍可触摸操作但不争夺 IME 窗口焦点。RPC trace 同时记录菜单来源、焦点状态和 IME 窗口 flags，并由 `imeUiDiagnostics()` 提供不清空记录的一次性现场摘要。安装包含修复的 APK 后，应分别长按横栏候选和展开页候选，确认菜单可见、可点选/点击外部关闭，且 trace 不再出现紧随 `candidate_menu_shown` 的 `onFinishInputView`/`onWindowHidden`；设备端验证仍需在实际 Android 宿主上完成。

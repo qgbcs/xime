@@ -80,6 +80,31 @@ object RpcUiController {
         }
     }
 
+    /** RPC：合并只读窗口快照与最近 UI 事件，方便一次调用检查焦点与菜单路径。 */
+    @JvmStatic
+    fun imeUiDiagnostics(): String {
+        val bridge = imeBridge ?: return imeUnavailable()
+        val snapshot = JSONObject(bridge.uiSnapshot())
+        val trace = JSONObject(imeUiTrace())
+        val events = trace.optJSONArray("events") ?: JSONArray()
+        val recentEvents = JSONArray()
+        val first = (events.length() - 50).coerceAtLeast(0)
+        for (index in first until events.length()) {
+            recentEvents.put(JSONObject(events.getJSONObject(index).toString()))
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("snapshot", snapshot)
+            .put(
+                "trace",
+                JSONObject()
+                    .put("capacity", trace.optInt("capacity"))
+                    .put("count", trace.optInt("count"))
+                    .put("recent_events", recentEvents)
+            )
+            .toString()
+    }
+
     /** 供活动 IME 挂载/摘除测试桥。 */
     fun attachIme(bridge: ImeTestBridge) { imeBridge = bridge }
     fun detachIme(bridge: ImeTestBridge) { if (imeBridge === bridge) imeBridge = null }

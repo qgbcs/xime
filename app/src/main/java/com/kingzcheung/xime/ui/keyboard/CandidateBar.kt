@@ -60,6 +60,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupProperties
 import com.kingzcheung.xime.R
 import com.kingzcheung.xime.keyboard.KeyboardPage
 import com.kingzcheung.xime.keyboard.OverlayRoute
@@ -448,7 +449,10 @@ fun CandidateBar(
                             fontSize = candidateTextSize.sp,
                             onLongClick = if (isCustom) {
                                 {
-                                    callbacks.onUiDiagnosticEvent?.invoke("candidate_long_press", candidate)
+                                    callbacks.onUiDiagnosticEvent?.invoke(
+                                        "candidate_long_press",
+                                        "source=candidate_bar;candidate=$candidate"
+                                    )
                                     longPressedWord = candidate
                                 }
                             } else null
@@ -456,21 +460,31 @@ fun CandidateBar(
                         if (isCustom) {
                             DropdownMenu(
                                 expanded = longPressedWord == candidate,
+                                properties = PopupProperties(focusable = false),
                                 onDismissRequest = {
-                                    callbacks.onUiDiagnosticEvent?.invoke("candidate_menu_dismissed", candidate)
+                                    callbacks.onUiDiagnosticEvent?.invoke(
+                                        "candidate_menu_dismissed",
+                                        "source=candidate_bar;candidate=$candidate;popup_focusable=false"
+                                    )
                                     longPressedWord = null
                                 }
                             ) {
                                 LaunchedEffect(longPressedWord == candidate) {
                                     if (longPressedWord == candidate) {
-                                        callbacks.onUiDiagnosticEvent?.invoke("candidate_menu_shown", candidate)
+                                        callbacks.onUiDiagnosticEvent?.invoke(
+                                            "candidate_menu_shown",
+                                            "source=candidate_bar;candidate=$candidate;popup_focusable=false"
+                                        )
                                     }
                                 }
                                 DropdownMenuItem(
                                     text = { Text("移到第二屏") },
                                     onClick = {
                                         val w = candidate
-                                        callbacks.onUiDiagnosticEvent?.invoke("candidate_menu_selected", "$w:moveSecondPage")
+                                        callbacks.onUiDiagnosticEvent?.invoke(
+                                            "candidate_menu_selected",
+                                            "source=candidate_bar;candidate=$w;action=moveSecondPage"
+                                        )
                                         longPressedWord = null
                                         callbacks.onCustomPhraseAction?.invoke(w, "moveSecondPage")
                                     }
@@ -479,7 +493,10 @@ fun CandidateBar(
                                     text = { Text("删除该词") },
                                     onClick = {
                                         val w = candidate
-                                        callbacks.onUiDiagnosticEvent?.invoke("candidate_menu_selected", "$w:delete")
+                                        callbacks.onUiDiagnosticEvent?.invoke(
+                                            "candidate_menu_selected",
+                                            "source=candidate_bar;candidate=$w;action=delete"
+                                        )
                                         longPressedWord = null
                                         callbacks.onCustomPhraseAction?.invoke(w, "delete")
                                     }

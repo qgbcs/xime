@@ -203,9 +203,11 @@ class CandidateBarTest {
         composeTestRule.waitForIdle()
         assertEquals(
             listOf(
-                "candidate_long_press" to "learned",
-                "candidate_menu_shown" to "learned",
-                "candidate_menu_selected" to "learned:moveSecondPage",
+                "candidate_long_press" to "source=candidate_bar;candidate=learned",
+                "candidate_menu_shown" to
+                    "source=candidate_bar;candidate=learned;popup_focusable=false",
+                "candidate_menu_selected" to
+                    "source=candidate_bar;candidate=learned;action=moveSecondPage",
             ),
             uiEvents,
         )
@@ -215,6 +217,7 @@ class CandidateBarTest {
     @Test
     fun expandedCandidatePageLongPressCanDeleteCandidate() {
         var action: String? = null
+        val uiEvents = mutableListOf<Pair<String, String>>()
         composeTestRule.setContent {
             MaterialTheme {
                 CandidatePage(
@@ -226,6 +229,7 @@ class CandidateBarTest {
                     callbacks = CandidatePageCallbacks(
                         onCandidateSelect = { _, _ -> },
                         onCustomPhraseAction = { _, selectedAction -> action = selectedAction },
+                        onUiDiagnosticEvent = { event, detail -> uiEvents += event to detail },
                     ),
                     customPhraseWords = setOf("learned"),
                 )
@@ -236,5 +240,15 @@ class CandidateBarTest {
         composeTestRule.onNodeWithText("删除该词").assertIsDisplayed().performClick()
         assertEquals("delete", action)
         composeTestRule.onNodeWithText("other").assertIsDisplayed()
+        assertEquals(
+            listOf(
+                "candidate_long_press" to "source=candidate_page;candidate=learned",
+                "candidate_menu_shown" to
+                    "source=candidate_page;candidate=learned;popup_focusable=false",
+                "candidate_menu_selected" to
+                    "source=candidate_page;candidate=learned;action=delete",
+            ),
+            uiEvents,
+        )
     }
 }
