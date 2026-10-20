@@ -7,6 +7,9 @@ internal data class LearnedCandidateEntry(
 )
 
 internal object LearnedCandidateIndex {
+    fun frontCandidatesForRimePage(front: List<String>, pageNo: Int): List<String> =
+        if (pageNo == 0) front else emptyList()
+
     fun parse(line: String): LearnedCandidateEntry? {
         val lastTab = line.lastIndexOf('\t')
         if (lastTab > 0) {
@@ -84,7 +87,7 @@ internal object LearnedCandidateIndex {
         })
     }
 
-    fun moveToEnd(
+    fun demoteWord(
         entries: List<LearnedCandidateEntry>,
         word: String,
         demotedScore: Long,

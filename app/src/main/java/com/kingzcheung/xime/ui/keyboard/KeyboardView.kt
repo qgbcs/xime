@@ -228,8 +228,8 @@ fun KeyboardView(
         onCardPositioned = onCardPositioned,
     ) {
     Box(modifier = contentModifier) {
-        // 当前方案用户自定义候选词集合（custom_phrase），供候选栏长按删除/沉底判断；
-        // 切换方案，或自动学习 / 删除 / 沉底写盘后（UserPhraseManager.phraseRevision
+        // 当前方案用户自定义候选词集合，供普通和展开候选栏的长按菜单判断；
+        // 切换方案，或自动学习 / 删除 / 降频后（UserPhraseManager.phraseRevision
         // 递增）重新从磁盘加载。
         val customPhraseContext = LocalContext.current
         val customPhraseRevision =
@@ -311,7 +311,8 @@ fun KeyboardView(
             val candidateBarState = remember(
                 cs.candidates, cs.candidateComments, cs.inputText, cs.preeditText, cs.isComposing,
                 cs.associationCandidates, cs.pendingEnglishText, cs.isShowingRecentClipboard, cs.hasNextPage,
-                state.isCalculatorMode, handwritingCandidates, handwritingComments, showHandwritingCandidates,
+                cs.demotedPhraseCount, state.isCalculatorMode, handwritingCandidates, handwritingComments,
+                showHandwritingCandidates,
             ) {
                 if (showHandwritingCandidates) {
                     CandidateBarState.AssociationOnly(
@@ -334,6 +335,7 @@ fun KeyboardView(
                         isShowingRecentClipboard = cs.isShowingRecentClipboard,
                         hasNextPage = cs.hasNextPage,
                         isCalculatorActive = state.isCalculatorMode,
+                        demotedCandidateCount = cs.demotedPhraseCount,
                     )
                 }
             }
@@ -504,6 +506,7 @@ fun KeyboardView(
                         // 本组件观察到变化会自动重新加载词条集合，无需在此手动刷新。
                         callbacks.onCustomPhraseAction?.invoke(word, action)
                     },
+                    onUiDiagnosticEvent = callbacks.onUiDiagnosticEvent,
                 ),
                 inlineSuggestions = inlineSuggestions,
             )
@@ -1096,11 +1099,16 @@ fun KeyboardView(
                             hasPrevPage = candidateState.value.hasPrevPage,
                             bottomPaddingDp = state.keyboardBottomPaddingDp,
                         ),
+                        customPhraseWords = customPhraseWords,
                         callbacks = CandidatePageCallbacks(
                             onCandidateSelect = { index, candidate ->
                                 callbacks.onCandidateSelect(index, candidate)
                                 viewModel.closeOverlay()
                             },
+                            onCustomPhraseAction = { word, action ->
+                                callbacks.onCustomPhraseAction?.invoke(word, action)
+                            },
+                            onUiDiagnosticEvent = callbacks.onUiDiagnosticEvent,
                             onAssociationSelect = { index, candidate ->
                                 callbacks.onAssociationSelect?.invoke(index, candidate)
                                 viewModel.closeOverlay()

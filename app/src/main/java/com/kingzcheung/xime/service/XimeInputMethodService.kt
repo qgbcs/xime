@@ -407,7 +407,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         val learnedByWord = learned.associateBy { it.word }
         val rimeCandidates = rimeEngine.getCandidatesWithComments().map { it.text }
         val visibleItems = com.kingzcheung.xime.ui.keyboard.EnglishCandidateDisplayPolicy
-            .prepare(cs.candidates.take(20))
+            .prepare(cs.candidates, cs.demotedPhraseCount)
             .associateBy { it.index }
         val candidateRows = org.json.JSONArray()
         cs.candidates.forEachIndexed { index, word ->
@@ -543,6 +543,50 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         override fun diagnostics(): String = runSerialImeTest {
             buildImeDiagnostics().toString()
         }
+
+        override fun uiSnapshot(): String = runSerialImeTest {
+            withContext(Dispatchers.Main.immediate) {
+                buildImeUiSnapshot().toString()
+            }
+        }
+    }
+
+    internal fun buildImeUiSnapshot(): org.json.JSONObject {
+        val cs = candidateState.value
+        val editor = currentInputEditorInfo
+        val decor = window.window?.decorView
+        val candidateSummary = org.json.JSONArray()
+        cs.candidates.take(8).forEach(candidateSummary::put)
+        return org.json.JSONObject()
+            .put("ime_active", true)
+            .put("input_view_shown", isInputViewShown)
+            .put("window_decor_shown", decor?.isShown ?: false)
+            .put("window_visibility", decor?.visibility ?: View.GONE)
+            .put("has_input_connection", currentInputConnection != null)
+            .put("editor", org.json.JSONObject()
+                .put("attached", editor != null)
+                .put("package", editor?.packageName ?: "")
+                .put("input_type", editor?.inputType ?: 0)
+                .put("ime_options", editor?.imeOptions ?: 0)
+                .put("action_id", editor?.actionId ?: 0))
+            .put("input", org.json.JSONObject()
+                .put("schema", uiState.value.currentSchemaId)
+                .put("ascii", uiState.value.isAsciiMode)
+                .put("composing", cs.isComposing)
+                .put("input_text", cs.inputText)
+                .put("preedit", cs.preeditText)
+                .put("pending_english_text", cs.pendingEnglishText)
+                .put("candidate_count", cs.candidates.size)
+                .put("candidates", candidateSummary)
+                .put("page_has_next", cs.hasNextPage)
+                .put("page_has_prev", cs.hasPrevPage))
+    }
+
+    internal fun recordImeUiTrace(event: String, detail: String = "") {
+        com.kingzcheung.xime.util.RpcUiController.recordImeUiEvent(
+            event,
+            buildImeUiSnapshot().put("detail", detail)
+        )
     }
     
     private val inlineSuggestionManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -1684,6 +1728,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        recordImeUiTrace("onStartInputView", "restarting=$restarting")
         info?.let { updateEnterKeyText(it) }
         hasHardwareKeyboard = resources.configuration.keyboard != android.content.res.Configuration.KEYBOARD_NOKEYS
         applyCompactMode()
@@ -1857,8 +1902,14 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         clearInputState()
         recentClipboardItemsState.value = emptyList()
     }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        recordImeUiTrace("onFinishInputView", "finishingInput=$finishingInput")
+        super.onFinishInputView(finishingInput)
+    }
     
     override fun onWindowHidden() {
+        recordImeUiTrace("onWindowHidden")
         super.onWindowHidden()
         clearInputState()
         recentClipboardItemsState.value = emptyList()
@@ -1866,6 +1917,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
 
     override fun onWindowShown() {
         super.onWindowShown()
+        recordImeUiTrace("onWindowShown")
         clipboardSyncBridge?.pullOnce()
     }
     
@@ -1953,7 +2005,8 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
     }
     
-    internal fun hideKeyboard() {
+    internal fun hideKeyboard(source: String = "unknown") {
+        recordImeUiTrace("hideKeyboard", source)
         clearInputState()
         requestHideSelf(0)
     }

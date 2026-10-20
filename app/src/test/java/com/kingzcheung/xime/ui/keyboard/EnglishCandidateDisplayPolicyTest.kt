@@ -56,4 +56,20 @@ class EnglishCandidateDisplayPolicyTest {
         assertTrue(EnglishCandidateDisplayPolicy.isEnglishWord("well-known"))
         assertFalse(EnglishCandidateDisplayPolicy.isEnglishWord("中国"))
     }
+
+    @Test
+    fun `demoted candidates are hidden from first screen but retain their original selection index`() {
+        val items = EnglishCandidateDisplayPolicy.prepare(
+            listOf("你好", "世界", "deprioritized"),
+            demotedCandidateCount = 1,
+        )
+
+        assertEquals(listOf("你好", "世界"), items.map { it.candidate })
+        assertEquals(listOf(0, 1), items.map { it.index })
+        assertEquals(
+            listOf("你好", "世界", "deprioritized"),
+            EnglishCandidateDisplayPolicy.prepare(listOf("你好", "世界", "deprioritized"))
+                .map { it.candidate },
+        )
+    }
 }

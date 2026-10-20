@@ -12,11 +12,13 @@ import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.ArrayDeque
 
 object RpcUiController {
     private const val MAX_LOG_CHARS = 100 * 1024
     private const val MAX_LOG_LINES = 1000
     private const val MEMORY_LOG_KEY = "log.memory"
+    private const val MAX_IME_UI_TRACE_EVENTS = 300
 
     /**
      * 活动 IME 提供的"输入/候选"直达测试桥。
@@ -40,9 +42,43 @@ object RpcUiController {
         fun snapshot(): String
         /** 只读候选来源、学习频率和首屏显示映射。 */
         fun diagnostics(): String
+        /** 只读当前 IME 窗口、编辑器和输入/候选摘要。 */
+        fun uiSnapshot(): String
     }
 
     private var imeBridge: ImeTestBridge? = null
+    private val imeUiTrace = ArrayDeque<JSONObject>()
+    private val imeUiTraceLock = Any()
+
+    /** Record one bounded UI/IME event together with the state observed at that moment. */
+    @JvmStatic
+    fun recordImeUiEvent(event: String, state: JSONObject) {
+        val entry = JSONObject(state.toString())
+            .put("event", event)
+            .put("timestamp_ms", System.currentTimeMillis())
+            .put("elapsed_realtime_ms", android.os.SystemClock.elapsedRealtime())
+        synchronized(imeUiTraceLock) {
+            if (imeUiTrace.size >= MAX_IME_UI_TRACE_EVENTS) imeUiTrace.removeFirst()
+            imeUiTrace.addLast(entry)
+        }
+    }
+
+    /** Read the bounded event trace; optionally clear it after taking the snapshot. */
+    @JvmStatic
+    @JvmOverloads
+    fun imeUiTrace(clear: Boolean = false): String {
+        synchronized(imeUiTraceLock) {
+            val events = JSONArray()
+            imeUiTrace.forEach { events.put(JSONObject(it.toString())) }
+            if (clear) imeUiTrace.clear()
+            return JSONObject()
+                .put("ok", true)
+                .put("capacity", MAX_IME_UI_TRACE_EVENTS)
+                .put("count", events.length())
+                .put("events", events)
+                .toString()
+        }
+    }
 
     /** 供活动 IME 挂载/摘除测试桥。 */
     fun attachIme(bridge: ImeTestBridge) { imeBridge = bridge }
@@ -301,4 +337,8 @@ object RpcUiController {
     /** RPC：只读候选来源、学习频率与首屏英文缩略映射。 */
     @JvmStatic
     fun imeDiagnostics(): String = imeBridge?.diagnostics() ?: imeUnavailable()
+
+    /** RPC：只读键盘窗口、输入连接/编辑器及当前输入候选状态。 */
+    @JvmStatic
+    fun imeUiSnapshot(): String = imeBridge?.uiSnapshot() ?: imeUnavailable()
 }

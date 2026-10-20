@@ -7,6 +7,18 @@ import org.junit.Test
 class LearnedCandidateIndexTest {
 
     @Test
+    fun `learned front candidates are only injected on the first Rime page`() {
+        val learnedFront = listOf("cad", "curev")
+
+        assertEquals(
+            learnedFront,
+            LearnedCandidateIndex.frontCandidatesForRimePage(learnedFront, 0),
+        )
+        assertTrue(LearnedCandidateIndex.frontCandidatesForRimePage(learnedFront, 1).isEmpty())
+        assertTrue(LearnedCandidateIndex.frontCandidatesForRimePage(learnedFront, 3).isEmpty())
+    }
+
+    @Test
     fun `legacy english records migrate with their word as input code`() {
         assertEquals(
             LearnedCandidateEntry("hello world", "hello world", 7L),
@@ -64,5 +76,22 @@ class LearnedCandidateIndexTest {
         val entry = LearnedCandidateEntry("nihao", "你好", 9L)
 
         assertEquals(entry, LearnedCandidateIndex.parse(LearnedCandidateIndex.serialize(entry)))
+    }
+
+    @Test
+    fun `demoting a learned word uses the minimum negative score to move behind normal matches`() {
+        val entries = listOf(
+            LearnedCandidateEntry("nihao", "你好", 12L),
+            LearnedCandidateEntry("nihao", "拟好", 5L),
+            LearnedCandidateEntry("nihao", "泥豪", 2L),
+        )
+
+        val demoted = LearnedCandidateIndex.demoteWord(entries, "你好", -1L)
+
+        assertEquals(-1L, demoted.first { it.word == "你好" }.score)
+        assertEquals(
+            listOf("拟好", "泥豪", "你好"),
+            LearnedCandidateIndex.matching(demoted, "nihao").map { it.word },
+        )
     }
 }

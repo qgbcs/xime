@@ -87,8 +87,9 @@ data class CandidateBarCallbacks(
     val onClearAssociation: (() -> Unit)? = null,
     val onInputTextClick: (() -> Unit)? = null,
     val onAssociationSelect: ((Int, String) -> Unit)? = null,
-    // 长按用户自定义候选词：word=词条文本，action="delete"|"moveEnd"
-    val onCustomPhraseAction: ((word: String, action: String) -> Unit)? = null
+    // 长按用户自定义候选词：word=词条文本，action="delete"|"moveSecondPage"
+    val onCustomPhraseAction: ((word: String, action: String) -> Unit)? = null,
+    val onUiDiagnosticEvent: ((String, String) -> Unit)? = null
 )
 
 @Composable
@@ -106,7 +107,7 @@ fun CandidateBar(
     voiceSpectrum: FloatArray = FloatArray(16),
     voiceRecognitionState: RecognitionState = RecognitionState.IDLE,
     voicePluginName: String = "",
-    // 当前方案 custom_phrase 中用户自定义词条；命中的候选长按可删除/沉底
+    // 当前方案用户自定义词条；命中的候选长按可删除或降频到第二屏
     customPhraseWords: Set<String> = emptySet(),
 ) {
     val configuration = LocalConfiguration.current
@@ -161,11 +162,14 @@ fun CandidateBar(
             showLeftIcon = true
         }
         is CandidateBarState.ChineseCandidates -> {
-            val taken = s.candidates.take(20)
+            candidateDisplayItems = EnglishCandidateDisplayPolicy.prepare(
+                s.candidates,
+                demotedCandidateCount = s.demotedCandidateCount,
+            )
+            val taken = candidateDisplayItems.map { it.candidate }
             displayCandidates = taken
-            candidateDisplayItems = EnglishCandidateDisplayPolicy.prepare(taken)
             displayComments = s.comments
-            hasAnyMore = s.hasMore
+            hasAnyMore = s.hasMore || candidateDisplayItems.size < s.candidates.size
             showLeftIcon = false
             displayAssociation = remember(s.associationCandidates, taken, s.inputText, textMeasurer) {
                 if (taken.isEmpty()) {
@@ -443,26 +447,39 @@ fun CandidateBar(
                             selectedTextColor = visuals.selectedTextColor,
                             fontSize = candidateTextSize.sp,
                             onLongClick = if (isCustom) {
-                                { longPressedWord = candidate }
+                                {
+                                    callbacks.onUiDiagnosticEvent?.invoke("candidate_long_press", candidate)
+                                    longPressedWord = candidate
+                                }
                             } else null
                         )
                         if (isCustom) {
                             DropdownMenu(
                                 expanded = longPressedWord == candidate,
-                                onDismissRequest = { longPressedWord = null }
+                                onDismissRequest = {
+                                    callbacks.onUiDiagnosticEvent?.invoke("candidate_menu_dismissed", candidate)
+                                    longPressedWord = null
+                                }
                             ) {
+                                LaunchedEffect(longPressedWord == candidate) {
+                                    if (longPressedWord == candidate) {
+                                        callbacks.onUiDiagnosticEvent?.invoke("candidate_menu_shown", candidate)
+                                    }
+                                }
                                 DropdownMenuItem(
-                                    text = { Text("移到末尾") },
+                                    text = { Text("移到第二屏") },
                                     onClick = {
                                         val w = candidate
+                                        callbacks.onUiDiagnosticEvent?.invoke("candidate_menu_selected", "$w:moveSecondPage")
                                         longPressedWord = null
-                                        callbacks.onCustomPhraseAction?.invoke(w, "moveEnd")
+                                        callbacks.onCustomPhraseAction?.invoke(w, "moveSecondPage")
                                     }
                                 )
                                 DropdownMenuItem(
                                     text = { Text("删除该词") },
                                     onClick = {
                                         val w = candidate
+                                        callbacks.onUiDiagnosticEvent?.invoke("candidate_menu_selected", "$w:delete")
                                         longPressedWord = null
                                         callbacks.onCustomPhraseAction?.invoke(w, "delete")
                                     }

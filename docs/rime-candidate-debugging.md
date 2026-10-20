@@ -116,3 +116,29 @@ RpcUiController.imeDiagnostics()
 ```
 
 Kotlin/JVM 回归测试覆盖旧数据格式迁移、中英文频率共用、输入码前缀匹配、英文候选数量限制、Unicode 安全截短、总显示长度限制以及 UI 标签与原词身份分离。设备验证还应检查 diagnostics 中的 `candidate_diagnostics` 与实际点选后的提交文本一致。
+
+候选长按菜单中的“移到第二屏”会降低应用学习分数：自动学习词设为最小负分 `-1`，排到当前 Rime 候选之后并从普通候选栏首屏隐藏；展开候选列表仍能找到它。再次选中后加一，恢复为非负分并回到前排。此分数是应用内前置/后置分段的状态，不是 Rime 词典权重或 Rime 计算出的真实词频。手动 custom_phrase 继续通过 Rime 权重降低排序。自动词与手动词在普通候选栏和展开列表中均可长按删除；展开列表的长按菜单也提供相同的降频和删除操作。
+
+## 案例 5：已学习英文词在每个 Rime 翻页后重复前置
+
+真机 RPC 对 `c` 执行 `imeKey("c")` 并连续翻页，确认每页 `front=8`，候选都重复以 `cad、curev、cmd、chacuopy、cbg、claude、com、code` 开头；Rime 页码从 0 增至 1、2、3 时，应用仍把同一组学习词拼在该页中文候选之前。对照 `x` 是 `front=2`，同样重复出现在每个 Rime 页。这是合并逻辑每次刷新都无条件前置学习词造成的分页错误，与词频数值大小无关。
+
+修复后，应用学习词只在 Rime 第 0 页前置；后续页保留该页 Rime 候选，不再重复前置英语词。前置计数随页变为 0，点击后续页候选仍按原索引交给 Rime。英文和中文应用学习词共用的是应用学习表内部的频率分数；未经应用学习的 Rime 字典候选并没有可直接比较的同尺度分数，因此不能称为全量中英文统一排序。当前选择是保留 Rime 自身顺序，而不是擅自重排所有字典候选。
+
+同一真机输入 RPC 显示 `c` 原始键处理后组合状态和候选仍有效，`x` 也正常；键位配置中 `c` 的 tap 为 `"c"`，其已定义上滑/下滑动作不包含收起键盘。源码中实际收起键盘的路径是候选栏专用向下按钮触发 `requestHideSelf()`，并非字母 `c` 的普通 tap。RPC 直接按键不等同于触屏事件，无法据此排除 Compose/触控层的设备现场问题；真机 UI 仍需复验长按菜单操作后窗口是否保持显示。
+
+## RPC：键盘窗口与 UI 事件追踪
+
+新增只读接口用于现场手动复现后取证：
+
+```python
+from com.kingzcheung.xime.util import RpcUiController
+RpcUiController.imeUiTrace(True)  # 清空旧事件，返回清空前的记录
+RpcUiController.imeUiSnapshot()   # 当前窗口、编辑器和输入/候选摘要
+# 在设备上操作：长按候选、选择菜单项，再按 c 和 x
+RpcUiController.imeUiTrace()      # 读取记录，不清空
+```
+
+`imeUiSnapshot()` 报告 `input_view_shown`、窗口 decor 可见状态、输入连接和编辑器元数据，以及当前输入、候选数量和前 8 个候选。`imeUiTrace(clear)` 为最多 300 条的环形记录；每条包含 wall-clock 与 elapsed-realtime 时间戳，以及当时的窗口/编辑器/输入状态。记录事件包含 `key_touch_down`、`key_touch_up`、`candidate_long_press`、`candidate_menu_shown`、`candidate_menu_dismissed`、`candidate_menu_selected`、`hideKeyboard`、`onStartInputView`、`onFinishInputView`、`onWindowShown` 和 `onWindowHidden`。`hideKeyboard` 事件的 `detail` 标明调用来源。
+
+这两个接口不模拟触摸，不会主动触发隐藏窗口或修改输入状态。建议先调用 `imeUiTrace(True)`，再现场操作复现，最后读取 `imeUiTrace()`；若窗口隐藏但没有 `hideKeyboard` 事件，生命周期事件仍可帮助判断是否由系统/宿主隐藏。`imeKey()` 仍仅用于 Rime 按键管线验证，不等同于真实 UI 触摸。

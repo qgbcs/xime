@@ -14,8 +14,13 @@ internal object EnglishCandidateDisplayPolicy {
     private const val MAX_SINGLE_ENGLISH_PREFIX_CODE_POINTS = 10
     private const val ELLIPSIS = "…"
 
-    fun prepare(candidates: List<String>): List<CandidateDisplayItem> {
-        val indexed = candidates.mapIndexed { index, candidate ->
+    fun prepare(
+        candidates: List<String>,
+        demotedCandidateCount: Int = 0,
+        maxCandidates: Int = 20,
+    ): List<CandidateDisplayItem> {
+        val primaryCount = candidates.size - demotedCandidateCount.coerceIn(0, candidates.size)
+        val indexed = candidates.take(primaryCount).take(maxCandidates).mapIndexed { index, candidate ->
             CandidateDisplayItem(index, candidate, candidate)
         }
         val english = indexed.filter { isEnglishWord(it.candidate) }

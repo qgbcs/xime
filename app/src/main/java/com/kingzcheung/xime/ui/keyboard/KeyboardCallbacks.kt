@@ -11,8 +11,9 @@ data class KeyboardCallbacks(
     val onCandidateSelect: (Int, String) -> Unit,
     val onAssociationSelect: ((Int, String) -> Unit)? = null,
     val onClearAssociation: (() -> Unit)? = null,
-    // 长按用户自定义候选词的管理动作：word=词条，action="delete"|"moveEnd"
+    // 长按用户自定义候选词的管理动作：word=词条，action="delete"|"moveSecondPage"
     val onCustomPhraseAction: ((String, String) -> Unit)? = null,
+    val onUiDiagnosticEvent: ((String, String) -> Unit)? = null,
     val onToggleDarkMode: (() -> Unit)? = null,
     val onClipboard: (() -> Unit)? = null,
     val onClipboardSelect: ((String) -> Unit)? = null,

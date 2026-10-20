@@ -24,7 +24,7 @@ import kotlinx.coroutines.withContext
  *    （根除重建会话导致的卡死、丢候选、第二次无候选）。
  *
  * 2) 手动 custom_phrase（设置页维护，db_class=stabledb）：
- *    仍由 rime table_translator 在会话启动时一次性载入，手动删除/沉底后
+ *    仍由 rime table_translator 在会话启动时一次性载入，手动删除/降频后
  *    需要重建会话才生效（低频操作，沿用防抖重建）。
  */
 object UserPhraseManager {
@@ -34,11 +34,11 @@ object UserPhraseManager {
     /** 手动 custom_phrase 的沉底权重。 */
     private const val BOTTOM_WEIGHT = -100000
     private const val DEPLOY_DEBOUNCE_MS = 2000L
-    /** 每段（前置/沉底）最多注入候选栏的自动词数量。 */
+    /** 每段（前置/降频）最多注入候选栏的自动词数量。 */
     private const val MAX_INJECT_COUNT = 8
-    /** 沉底分值：低于此分（负分）的词注入到 rime 候选之后；沉底动作直接置为此值。 */
-    private const val DEMOTED_SCORE = -5L
-    /** 每点击上屏一次自动词，其分值加一，逐渐提升排序，沉底词连选 |DEMOTED_SCORE| 次重回前排。 */
+    /** 最小负分即可把学习词从前排移到当前 Rime 候选之后。 */
+    private const val DEMOTED_SCORE = -1L
+    /** 每点击上屏一次自动词，其分值加一；降频词再次选中一次即可恢复到非负分。 */
     private const val SELECT_BUMP = 1L
 
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -47,7 +47,7 @@ object UserPhraseManager {
 
     // ── 自动学习词：内存直管，独立存储，不经过 rime 会话 ──
     /** 中英文共用同一按输入编码关联的频率分值；负分词追加到 Rime 候选之后。 */
-    /** 前缀匹配结果：[front] 为正常词（置候选栏前部），[tail] 为沉底词（置 rime 候选之后）。 */
+    /** 前缀匹配结果：[front] 为前排词，[tail] 为降频后置于当前 Rime 候选之后的词。 */
     class AutoMatch(val front: List<String>, val tail: List<String>)
 
     /** schemaId -> 词条（始终按分值降序、同分稳定保序）；所有读写在 object 监视器内同步。 */
@@ -55,7 +55,7 @@ object UserPhraseManager {
     private val autoSaveMutex = Mutex()
 
     /**
-     * 自定义词磁盘内容修订号：学习 / 删除 / 沉底写盘成功后（在 [fileMutex] 内）递增。
+     * 自定义词磁盘内容修订号：学习 / 删除 / 降频写盘成功后（在 [fileMutex] 内）递增。
      * 候选栏观察此值并重新加载词条集合，从而即时刷新长按菜单的可用性。
      * 用 Compose state 承载，可在任意线程写、在组合中读。
      */
@@ -220,14 +220,14 @@ object UserPhraseManager {
     }
 
     /**
-     * 沉底自动词：分值置为 [DEMOTED_SCORE]（负分），候选栏立即把它追加到 rime 候选之后。
+     * 降低自动词频率：分值置为 [DEMOTED_SCORE]（负分），排到 Rime 当前页候选之后。
      * 以后点击该词每次加 [SELECT_BUMP]，分值回到 0 即重新前置注入（多次使用逐步提升）。
      */
     @Synchronized
-    fun moveAutoWordToEnd(context: Context, schemaId: String, word: String) {
+    fun moveAutoWordToSecondPage(context: Context, schemaId: String, word: String) {
         val cur = getEntries(context, schemaId)
         if (cur.none { it.word == word && it.score != DEMOTED_SCORE }) return
-        val next = LearnedCandidateIndex.moveToEnd(cur, word, DEMOTED_SCORE)
+        val next = LearnedCandidateIndex.demoteWord(cur, word, DEMOTED_SCORE)
         autoCache[schemaId] = next
         bumpPhraseRevision()
         persistAutoAsync(context, schemaId)
@@ -251,7 +251,7 @@ object UserPhraseManager {
     /**
      * 前缀匹配：
      * - front：分值 >= 0 的词，按分值降序，注入候选栏前部；
-     * - tail：负分（沉底）词，按分值升序（最沉的排最后），追加到 rime 候选之后。
+     * - tail：负分（降频）词，按分值升序，追加到当前 Rime 候选之后。
      */
     @Synchronized
     fun matchAutoPhrases(context: Context, schemaId: String, input: String): AutoMatch {

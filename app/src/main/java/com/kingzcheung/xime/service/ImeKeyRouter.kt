@@ -825,7 +825,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             // 点击的是 app 层注入的自动学习词（前置或沉底）：直接上屏，不经过 rime 选词，也不重建会话。
             val word = candState.candidates.getOrElse(effectiveIndex) { "" }
             if (word.isNotEmpty()) {
-                // 记一次使用：分值 +1，沉底词被连选多次后可逐步回升到前排。
+                // 记一次使用：分值 +1，降频词被再次选中后逐步回升到前排。
                 com.kingzcheung.xime.settings.UserPhraseManager.bumpAutoWordOnPick(
                     service, service.uiState.value.currentSchemaId, word, candState.inputText
                 )

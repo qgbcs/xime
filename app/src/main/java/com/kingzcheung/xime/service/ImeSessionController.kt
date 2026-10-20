@@ -23,7 +23,7 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
 
     /**
      * 把自动学习词（前缀匹配）合并进候选：
-     * - 正常词（分值 >=0）前置；沉底词（负分）追加到 rime 候选之后；
+     * - 正常词（分值 >=0）前置；降频词（负分）追加到当前 Rime 候选之后；
      * - 仅在非 ascii、非 T9、且有字母编码时生效。
      * 注释/候选不假定等长，按索引过滤以避免丢词。
      */
@@ -46,17 +46,20 @@ internal class ImeSessionController(private val service: XimeInputMethodService)
         }
         val schemaId = service.uiState.value.currentSchemaId
         val match = UserPhraseManager.matchAutoPhrases(service, schemaId, input)
-        if (match.front.isEmpty() && match.tail.isEmpty()) {
+        val rimePageNo = service.rimeEngine.getCandidatePageInfo().pageNo
+        val front = com.kingzcheung.xime.settings.LearnedCandidateIndex
+            .frontCandidatesForRimePage(match.front, rimePageNo)
+        if (front.isEmpty() && match.tail.isEmpty()) {
             return MergedResult(rimeCandidates, rimeComments, 0, 0)
         }
-        val removeSet = (match.front + match.tail).toHashSet()
+        val removeSet = (front + match.tail).toHashSet()
         val keptIndices = rimeCandidates.indices.filterNot { rimeCandidates[it] in removeSet }
         val keptTexts = keptIndices.map { rimeCandidates[it] }
         val keptComments = keptIndices.map { rimeComments.getOrElse(it) { "" } }
-        val outCandidates = match.front + keptTexts + match.tail
+        val outCandidates = front + keptTexts + match.tail
         val outComments =
-            List(match.front.size) { "" } + keptComments + List(match.tail.size) { "" }
-        return MergedResult(outCandidates, outComments, match.front.size, match.tail.size)
+            List(front.size) { "" } + keptComments + List(match.tail.size) { "" }
+        return MergedResult(outCandidates, outComments, front.size, match.tail.size)
     }
 
     internal fun applyComposition(composition: com.kingzcheung.xime.rime.RimeComposition) {

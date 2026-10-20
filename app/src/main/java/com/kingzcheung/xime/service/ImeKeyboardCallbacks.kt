@@ -83,9 +83,11 @@ internal fun rememberImeKeyboardCallbacks(
                 }
             },
             onKeyPressDown = { key ->
+                service.recordImeUiTrace("key_touch_down", key)
                 service.feedbackManager.performKeyPressDownEffect(key, view)
             },
             onKeyRelease = { key ->
+                service.recordImeUiTrace("key_touch_up", key)
                 service.feedbackManager.hapticFeedback(view, keyUp = true)
             },
             onCandidateSelect = { index, candidate ->
@@ -126,10 +128,10 @@ internal fun rememberImeKeyboardCallbacks(
                         } else {
                             mgr.deleteWord(service, schemaId, word)
                         }
-                    "moveEnd" ->
+                    "moveSecondPage" ->
                         if (isAuto) {
-                            mgr.moveAutoWordToEnd(service, schemaId, word)
-                            // 立即重合并：该词当场移到 rime 候选之后（列表末尾）。
+                            mgr.moveAutoWordToSecondPage(service, schemaId, word)
+                            // 立即重合并：该词当场降低到当前 Rime 候选之后。
                             service.updateUI()
                         } else {
                             mgr.moveToEnd(service, schemaId, word)
@@ -182,7 +184,8 @@ internal fun rememberImeKeyboardCallbacks(
             onSettings = { service.schemaController.openSettings() },
             onSwitchSchema = { schemaId -> service.schemaController.switchSchema(schemaId) },
             onToggleSchemaSwitch = { sw -> service.sessionController.toggleSchemaSwitch(sw) },
-            onHideKeyboard = { service.hideKeyboard() },
+            onHideKeyboard = { service.hideKeyboard("candidate_bar") },
+            onUiDiagnosticEvent = { event, detail -> service.recordImeUiTrace(event, detail) },
             onSwitchKeyboard = {
                 val imm = service.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
                 @Suppress("DEPRECATION")
