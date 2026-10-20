@@ -39,6 +39,8 @@ from collections import OrderedDict
 from paho.mqtt import client as mqtt_client
 from paho.mqtt.enums import CallbackAPIVersion
 
+from rpc_executor import stime
+
 # 组合方（如 pty_client_mqtt）需要把全部日志导去自己的环形缓冲/Web 控制台，
 # 而不是让本模块在 import 时往 root 挂一个写 stderr 的 StreamHandler（会插进
 # PTY 远端画面）。约定：import 本模块前设置环境变量 CMQ_NO_STDERR_LOG=1，
@@ -70,7 +72,7 @@ PERIODIC_WAKEUP_SENTINEL = (PERIODIC_WAKEUP_TOPIC, None, None)
 #   ]
 # =========================================================================
 BROKER_LIST = [
-    ("mqtt.iotbhai.io", 1883),                  # RTT: 429.3 ms | 建连:  597.7 ms (个人站点？实际上不能用。当作测试也挺好)
+    # ("mqtt.iotbhai.io", 1883),                  # RTT: 429.3 ms | 建连:  597.7 ms (个人站点？实际上不能用。当作测试也挺好)
     ("broker.mqtt-dashboard.com", 1883),        # RTT: 307.1 ms | 建连:  465.6 ms (HiveMQ Dashboard，综合体验佳)
     ("mqtt.touchsocket.net", 1883),             # RTT:  29.5 ms | 建连:  293.4 ms (b 视频)
     ("broker.codenow.cn", 1883),                # RTT:  31.4 ms | 建连:  110.1 ms (CodeNow 国内公共MQTT)
@@ -83,8 +85,9 @@ BROKER_LIST = [
     ("mqtt.tyckr.io", 1883),                    # RTT: 436.0 ms | 建连:  596.2 ms (Tyckr)
     ("public-mqtt-broker.bevywise.com", 1883),  # RTT: 451.3 ms | 建连:  575.9 ms (Bevywise)
     ("demo.tbmq.io", 1883, ["demo", ""]),       # ThingsBoard TBMQ可以，下面4个全部不能用
+    ('public.runmqtt.com', 1883, ["ajbkvbp/device",'UcLNzAPGyxJbjPKF']),# mqtt.pro https://runmqtt.com/zh-Hans/public-broker
+    ("mqtt.flespi.io", 1883,[b'\xe6\x97\xa6\xa7\xf9\xf5\x84\xa2\x94\x95\xc2\xa7\x84\xc8\xe6\x96\xf9\x99\xa6\x95\xe5\xe9\x84\xa8\xa2\xd3\xa6\xe5\x89\x88\xe5\x81\xa2\xc3\xd8\x87\x85\x85\xf3\x84\xf9\x82\xf8\xf0\xd1\x82\x89\x91\x93\xe5\xd1\xd7\x95\xe8\xc2\xf7\xd7\xe7\xe6\x85\xd6\x82\x97\xf5'.decode('cp500'), ""]),#github q5  Flespi，将 YOUR_FLESPI_TOKEN 替换为注册后获取的 Token[reference:2]
     # ("public.mqtt.pro", 1883, ["ajbkvbp/demo", "OCDWjjOSlSexcWRG"]),        # MQTT.pro 公共沙箱，凭据定期轮换[reference:1]
-    # ("mqtt.flespi.io", 1883, ["stPwSVV73Eqw5LSv0iMXbc4EguS7JyuZR9lxU5uLxI5tiNM8ToTVqNpu85pFtJv9", ""]),                     # Flespi，将 YOUR_FLESPI_TOKEN 替换为注册后获取的 Token[reference:2]
     # ("io.adafruit.com", 1883, ["nagecubic","aio_"+"EiZX7901W4K4INtv13RSH6jqkEKl"]),        # Adafruit IO，需注册获取 #改成"aio_"+" 不能直接push error: GH013: Repository rule violations found for refs/heads/master.  GITHUB PUSH PROTECTION
     # ("mqtt.ably.io", 1883, ['yMJ3VQ.PxwimQ','Vw4oM1CCMxx0tm8xTIZtda72vNj3SmNkLbVPipSt5Ek']), # Ably，API Key 按 username:password 拆分填入[reference:4]
 
@@ -123,24 +126,6 @@ def get_duplicated_kargs(ka,*keys,default=GET_DUPLICATED_KARGS_DEFAULT,no_pop=Fa
     if len(r)==1:return r[0]
     raise ValueError('kargs matched keys len <> 1',ka,keys)
 # get_ka=get_multi_ka=getDuplicatedKargs=getKargsDuplicated=getKArgsDuplicated=get_kargs_duplicated=get_duplicated_kargs
-
-def stime(ms=0, format='%Y-%m-%d__%H.%M.%S', ms_splitor='__.'):
-    """可读毫秒级时间戳。ms 传整数毫秒；不传则取当前 UTC 毫秒。"""
-    if not ms:
-        ms = utc_ms()
-    elif isinstance(ms, float) and ms < 1e11:
-        # 看起来是 time.time() 的秒级浮点，转成整数毫秒
-        ms = round(ms * 1000)
-    else:
-        ms = int(ms)
-    sec, milli = divmod(ms, 1000)
-    
-    if ms_splitor:ms_splitor=ms_splitor + f"{milli:03d}"
-    return time.strftime(format, time.localtime(sec)) + ms_splitor
-
-def utc_ms():
-    """Return the current UTC Unix timestamp in integer milliseconds."""
-    return time.time_ns() // 1_000_000
 
 def get_req_id(ms=0):
     """ get_req_id 的返回值只精确到了毫秒，如果单片机在同一毫秒内连发两条不同状态，后一条会被 TTLCache 误杀丢弃。
@@ -1484,8 +1469,17 @@ class MultiMQTTManager:
             if c.is_connected():
                 c.subscribe(topic, **ka)
 
+    def unsubscribe(self, topic: str, **ka):
+        """取消订阅 topic，并阻止后续重连时自动重新订阅。"""
+        with self.lock:
+            self.subscribed_topics.discard(topic)
+            clients_snapshot = list(self.clients.items())
+        for host, c in clients_snapshot:
+            if c.is_connected():
+                c.unsubscribe(topic, **ka)
+
     def publish_broadcast(self, topic: str, payload_dict: dict, client_private_key_bytes=None, **ka):
-        """广播传输消息；qos/retain 等额外参数经 **ka 原样透传给 paho-mqtt Client.publish。"""
+        """广播传输消息并返回成功入队的 Broker 数；QoS 等参数透传给 paho。"""
         out_payload = payload_dict.copy()
         if client_private_key_bytes:
             try:
@@ -1516,9 +1510,13 @@ class MultiMQTTManager:
         payload_str = process_cipher(out_payload, decrypt=False, enabled=self.enable_crypto)
         with self.lock:
             clients_snapshot = list(self.clients.items())
+        published = 0
         for host, c in clients_snapshot:
             if c.is_connected():
-                c.publish(topic, payload_str, **ka)
+                info = c.publish(topic, payload_str, **ka)
+                if info.rc == mqtt_client.MQTT_ERR_SUCCESS:
+                    published += 1
+        return published
 
     def stop(self):
         self._stop_event.set()

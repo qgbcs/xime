@@ -351,7 +351,7 @@ public:
         return rime->set_input(session_id_, input);
     }
 
-    CompositionResult getComposition() {
+    CompositionResult getComposition(bool includeCommit = true) {
         CompositionResult result;
         if (!rime || !session_id_) {
             LOGE("getComposition: rime or session not available");
@@ -383,11 +383,13 @@ public:
             rime->free_context(&context);
         }
 
-        // 3. commit text（统一返回，避免调用方额外查询）
-        RIME_STRUCT(RimeCommit, commit);
-        if (rime->get_commit(session_id_, &commit)) {
-            result.committedText = commit.text ? commit.text : "";
-            rime->free_commit(&commit);
+        // 3. Commit retrieval consumes the pending commit; read it only when requested.
+        if (includeCommit) {
+            RIME_STRUCT(RimeCommit, commit);
+            if (rime->get_commit(session_id_, &commit)) {
+                result.committedText = commit.text ? commit.text : "";
+                rime->free_commit(&commit);
+            }
         }
 
         // 4. status: ascii mode
@@ -1309,11 +1311,12 @@ Java_com_kingzcheung_xime_rime_RimeEngine_nativeSetInput(
 JNIEXPORT jobject JNICALL
 Java_com_kingzcheung_xime_rime_RimeEngine_nativeGetComposition(
     JNIEnv* env,
-    jobject thiz
+    jobject thiz,
+    jboolean include_commit
 ) {
     ensureJniCache(env);
 
-    CompositionResult result = Rime::Instance().getComposition();
+    CompositionResult result = Rime::Instance().getComposition(include_commit == JNI_TRUE);
 
     jobjectArray candidateArray = env->NewObjectArray(
         result.candidates.size(), gRimeCandidateClass, nullptr);

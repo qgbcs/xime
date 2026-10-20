@@ -64,6 +64,23 @@ Linux 环境需安装 `librime-dev`、`pkg-config`、CMake 与 C++17 编译器�
 
 `source_fingerprint` 的哈希输入由 `app/build.gradle.kts` 明确列出：`app/src/main/java`、`app/src/main/jni/librime_jni`、`app/src/main/python`、`app/src/main/assets`、`app/src/main/res` 和 `app/src/main/AndroidManifest.xml`。它不含构建时间，也不覆盖本桌面测试目录、`plugin-core` 模块或构建脚本，因此适合区分这些应用源码输入的构建，不应视为整个仓库或全部 APK 依赖的完整校验和。
 
+## 案例 3：`zhubozi` 点击显示候选“猪”没有上屏
+
+### 真机证据与原因
+
+通过当前真机 `RpcUiController.imeType()`、`imePageDown()`、`imePick()` 及 Rime 直接状态接口复现：
+
+- 设备构建信息为 `20260919SECEXP=1长度17混合`，`git_hash=f796558`。重置后输入 `zhubozi`：第 0 页为“住脖子、主播……”；翻到第 1 页后，UI 与 Rime 当前页一致地显示“猪、主、祝……”（`page_no=1`、`page_size=20`、`front=0`、`tail=0`）。
+- 安装上一修复 APK 后执行 `imePick(0, "猪")`，RPC 明确返回 `selection_accepted=true`、`fallback_used=true`、`committed_text="猪"`、`partial_selection=false`，之后 `input=""`。这证明尾码 `bozi` 被回退提交路径清掉了，不是 Rime 原始菜单没有“猪”。
+- 同设备读取 Rime preview 对“猪”返回 `null`。直接在页 1 选择“猪”时，Rime 接受选择，原输入仍为 `zhubozi`，后续候选为“脖子、拨……”；在未消费 commit 的 composition 读取中，预编辑为“猪bo zi”。这证明该候选是有效的部分选词，应保留后续音节，不能当完整候选提交。
+- 前一次修复虽在空 commit 的探测分支补了 `clearComposition()`，却仍在 preview 缺失时执行有副作用的 `trimDanglingTailAndPick()`；恢复后又无条件调用 `commit()`，并允许 mismatch fallback 清空全部组字态、只上屏“猪”。测试只覆盖了一个布尔条件，没有覆盖 RPC 选词完整路径和“尾码仍可继续选择”，因此漏掉了这种数据丢失回归。
+
+### 修复与回归
+
+现在 preview 不可用时完全跳过尾码探测；正常候选选择成功后，先用不消费 pending commit 的 composition 查询检查是否仍有输入与后续候选。若有，立即刷新组合态并标记 `partial_selection=true`，不调用 `commit()`，也不允许只提交当前部分词的 mismatch fallback。只有 preview 明确显示没有剩余输入时，才允许完整候选 fallback。测试覆盖 preview 缺失时禁止有副作用探测，以及“仍有输入和候选”的部分选词条件。
+
+本次针对上一修复 APK 的真机复现已确认其实际回归：`committed_text="猪"`、`fallback_used=true`、之后输入清空。新的修复还需在新 APK 安装后重复同一 RPC；预期点“猪”后不产生 committed text，`partial_selection=true`，输入保持 composing，尾码候选为“脖子、拨……”。需再选择后续候选才完成上屏。
+
 ## 案例 2：点击部分音节候选后保留未选尾码
 
 ### 问题表现与真机复现

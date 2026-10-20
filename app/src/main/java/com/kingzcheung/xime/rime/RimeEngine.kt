@@ -367,7 +367,13 @@ class RimeEngine {
      */
     fun getComposition(): RimeComposition {
         return tryLocked(RimeComposition("", "", "", emptyArray(), false, false, false)) {
-            nativeGetComposition()
+            nativeGetComposition(true)
+        }
+    }
+
+    fun getCompositionWithoutCommit(): RimeComposition {
+        return tryLocked(RimeComposition("", "", "", emptyArray(), false, false, false)) {
+            nativeGetComposition(false)
         }
     }
 
@@ -725,7 +731,7 @@ class RimeEngine {
         expectedComment: String?
     ): Array<String>?
     private external fun nativeGetInput(): String?
-    private external fun nativeGetComposition(): RimeComposition
+    private external fun nativeGetComposition(includeCommit: Boolean): RimeComposition
     private external fun nativeSelectCandidate(
         index: Int,
         expectedText: String?,

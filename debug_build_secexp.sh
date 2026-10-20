@@ -24,7 +24,7 @@ VERSION_CODE="${VERSION_CODE:-20260919}"
 
 APP_CHINESE_NAME="${APP_CHINESE_NAME:-讯飞}"
 APP_NAME="${APP_CHINESE_NAME}输入法"
-APP_ICON_PATH="$PROJECT_DIR/app/icons/iFly_xunfei/ifly.webp"
+APP_ICON_PATH="$PROJECT_DIR/app/icons/iFly_xunfei/256.png"
 
 #APP_NAME="${VERSION_CODE: -4}输入法"
 #APP_ICON_PATH="${APP_ICON_PATH:-$PROJECT_DIR/app/src/main/res/drawable/ic_launcher_foreground.xml}"

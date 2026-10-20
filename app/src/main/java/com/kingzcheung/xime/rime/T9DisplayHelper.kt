@@ -80,6 +80,16 @@ data class CandidateInputPrefix(
     val selectedText: String,
 )
 
+fun candidateSelectionLeavesComposition(
+    selectionAccepted: Boolean,
+    committedText: String,
+): Boolean = selectionAccepted && committedText.isEmpty()
+
+fun canProbeDanglingTail(preview: RimeCandidatePreview?): Boolean = preview != null
+
+fun hasRemainingCandidateComposition(input: String, candidateCount: Int): Boolean =
+    input.isNotEmpty() && candidateCount > 0
+
 fun resolveCandidateInputPrefix(
     input: String,
     preview: RimeCandidatePreview,

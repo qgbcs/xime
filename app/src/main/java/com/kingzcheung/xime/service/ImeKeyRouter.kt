@@ -7,6 +7,9 @@ import com.kingzcheung.xime.association.AssociationManager
 import com.kingzcheung.xime.keyboard.OverlayRoute
 import com.kingzcheung.xime.rime.resolveRimeCandidateIndex
 import com.kingzcheung.xime.rime.resolveCandidateInputPrefix
+import com.kingzcheung.xime.rime.candidateSelectionLeavesComposition
+import com.kingzcheung.xime.rime.canProbeDanglingTail
+import com.kingzcheung.xime.rime.hasRemainingCandidateComposition
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.ui.keyboard.KeyboardLayoutState
 import com.kingzcheung.xime.ui.keyboard.isT9Schema
@@ -864,19 +867,29 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         } else {
             null
         }
-        if (!isT9 && selectedCandidate != null) {
+        val candidatePreview = if (!isT9 && selectedCandidate != null) {
+            service.rimeEngine.getCandidatePreview(baseIndex, selectedCandidate, expectedComment)
+        } else {
+            null
+        }
+        if (candidatePreview != null && selectedCandidate != null) {
             val partialOutcome = retainCandidatePrefix(
                 baseIndex,
                 selectedCandidate,
                 expectedComment,
+                candidatePreview,
             )
             if (partialOutcome != null) return partialOutcome
         }
 
-        // 非 T9：尾部若带有 rime 无法成词的悬空字母（hgi 的尾码 i），直接在原串上
+        // 非 T9 且 candidate preview 可用时，才探测尾部无法成词的悬空字母（如 hgi 的 i）。
+        // Preview 缺失时禁止 setInput 探测，直接走候选身份选择与下方的部分组合检查。
+        // 在原串上
         // selectCandidate 会把 rime 会话毒化为“无候选、不提交”（[confirmed, phony] 残留）。
         // 故在选词【之前】先用 setInput 探测剥掉悬空尾码，再干净选词上屏并追加尾码字面量。
-        if (!isT9 && selectedCandidate != null) {
+        // 探测期间若选中前缀候选但没有 commit，Rime 已留下 confirmed segment；恢复原输入前
+        // 必须 clearComposition，否则 setInput 只会在已确认片段后继续，候选菜单仍属于尾码。
+        if (!isT9 && selectedCandidate != null && canProbeDanglingTail(candidatePreview)) {
             val danglingTailCommit = trimDanglingTailAndPick(selectedCandidate)
             if (danglingTailCommit != null) {
                 return CandidateSelectionOutcome(
@@ -893,14 +906,16 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         // 非 T9 才调用 selectCandidate，并用 resolveRimeCandidateIndex 修正候选 index，
         // 避免 UI 候选被过滤/重排后上屏错词。
         var resolvedRimeIndex = -1
+        var rawCandidateTexts = emptyList<String>()
         val selectRimeOk = if (isT9) {
             true
         } else {
             val rawCandidates = service.rimeEngine.getCandidatesWithComments().toList()
+            rawCandidateTexts = rawCandidates.map { it.text }
             resolvedRimeIndex = resolveRimeCandidateIndex(
                 baseIndex,
                 selectedCandidate,
-                rawCandidates.map { it.text }
+                rawCandidateTexts
             )
             val rimeIndex = if (resolvedRimeIndex >= 0) resolvedRimeIndex else baseIndex
             service.rimeEngine.selectCandidate(
@@ -910,16 +925,42 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             )
         }
         if (!selectRimeOk) {
-            if (!isT9 && selectedCandidate != null && resolvedRimeIndex >= 0) {
+            if (!isT9 && selectedCandidate != null && resolvedRimeIndex >= 0 &&
+                candidatePreview != null && candidatePreview.textAfterSelection.isEmpty()
+            ) {
                 return commitVerifiedCandidate(selectedCandidate)
             }
             return CandidateSelectionOutcome(false, "", null)
         }
 
+        val compositionAfterSelection = if (isT9) {
+            null
+        } else {
+            service.rimeEngine.getCompositionWithoutCommit()
+        }
+        if (selectedCandidate != null && compositionAfterSelection != null &&
+            hasRemainingCandidateComposition(
+                compositionAfterSelection.input,
+                compositionAfterSelection.candidates.size,
+            )
+        ) {
+            withContext(Dispatchers.Main) {
+                service.sessionController.applyComposition(compositionAfterSelection)
+            }
+            return CandidateSelectionOutcome(
+                accepted = true,
+                rimeCommitText = "",
+                committedText = null,
+                partialSelection = true,
+            )
+        }
+
+        // 部分候选选中后仍有输入与候选时，上方已先刷新组合态并返回，避免 commit 消耗尾码。
         // T9：跳过 service.rimeEngine.commit()，用用户点选的 selectedCandidate 作为权威上屏文本。
         val committedText = if (isT9) "" else service.rimeEngine.commit()
         if (!isT9 && selectedCandidate != null && resolvedRimeIndex >= 0 &&
-            committedText != selectedCandidate
+            committedText != selectedCandidate &&
+            candidatePreview != null && candidatePreview.textAfterSelection.isEmpty()
         ) {
             return commitVerifiedCandidate(selectedCandidate, committedText)
         }
@@ -1034,6 +1075,8 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                 accepted = true,
                 rimeCommitText = committedText,
                 committedText = null,
+                partialSelection = !isT9 &&
+                    candidateSelectionLeavesComposition(selectRimeOk, committedText),
             )
         }
     }
@@ -1076,22 +1119,13 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         index: Int,
         candidate: String,
         expectedComment: String?,
+        preview: com.kingzcheung.xime.rime.RimeCandidatePreview,
     ): CandidateSelectionOutcome? {
         val originalInput = service.rimeEngine.getInput()
         if (originalInput.isEmpty()) return null
         val originalPageNo = service.rimeEngine.getCandidatePageInfo().pageNo
         if (originalPageNo < 0) return null
 
-        val preview = service.rimeEngine.getCandidatePreview(
-            index,
-            candidate,
-            expectedComment,
-        ) ?: run {
-            // 这不是“保留尾码”场景；让正常的 selectCandidate/commit 路径继续执行。
-            // 若 preview 为空，说明当前候选不具备可解析的前缀覆盖关系，直接放行以避免点击无响应。
-            FileLogger.w("ImeKeyRouter", "Rime candidate preview unavailable; falling back to normal selection")
-            return null
-        }
         if (preview.selectedText != candidate) {
             FileLogger.w("ImeKeyRouter", "Rime candidate preview identity mismatch; falling back to normal selection")
             return null
@@ -1199,6 +1233,10 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         }
         val committed = service.rimeEngine.commit()
         if (committed.isEmpty()) {
+            // select_candidate may confirm a partial segment (e.g. 猪 + remaining bozi)
+            // without producing a commit. set_input alone keeps that confirmed segment,
+            // so clear it before reconstructing the original input for normal selection.
+            service.rimeEngine.clearComposition()
             service.rimeEngine.setInput(original)
             restoreCandidatePage(originalPageNo)
             return null
