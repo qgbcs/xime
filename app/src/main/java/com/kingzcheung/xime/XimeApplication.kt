@@ -115,7 +115,7 @@ class XimeApplication : Application(), ImageLoaderFactory {
         SettingsPreferences.defaultKeyboardTheme = KeysConfigHelper.loadDefaultThemeId(this)
         SettingsPreferences.defaultDarkMode = KeysConfigHelper.loadDefaultDarkMode(this)
 
-        // 默认隐藏桌面图标，并允许设置页在运行时切换显示状态。
+        // 按设置显示或隐藏桌面图标（默认显示）。
         LauncherIconController.syncFromPreference(this)
 
         // 初始化模型运行时（内存管理 + 生命周期）

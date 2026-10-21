@@ -9,7 +9,8 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -66,6 +67,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -76,12 +80,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.chaquo.python.Python
 import com.kingzcheung.xime.MainActivity
+import com.kingzcheung.xime.settings.SettingItems
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.util.LauncherIconController
 import com.kingzcheung.xime.util.RpcUiController
@@ -95,6 +99,39 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import com.kingzcheung.xime.BuildConfig
+
+/** RPC 改动条目显隐时使用的状态键前缀，如 settings.item.rpc_settings.visible。 */
+private const val SETTING_ITEM_STATE_PREFIX = "settings.item."
+
+/** 连点标题的触发次数与相邻两次点击的最大间隔。 */
+private const val TITLE_MULTI_TAP_COUNT = 4
+private const val TITLE_MULTI_TAP_WINDOW_MS = 1500L
+
+/**
+ * 设置页条目显隐的统一读取入口，取代每个条目各自的 visible 状态变量。
+ *
+ * 优先级：本次运行期的临时显示（[reveal]，不落盘）> RPC 运行期状态 > 持久化偏好。
+ * 持久化的默认可见性集中在 [SettingItems.hiddenByDefault]。
+ */
+private class SettingsVisibility(private val context: Context) {
+    /** RPC 运行期覆盖，由调用方在每次重组时刷新。 */
+    var remoteOverrides: Map<String, String> = emptyMap()
+
+    private val runtimeVisible = mutableStateMapOf<String, Boolean>()
+
+    fun isVisible(itemId: String): Boolean {
+        runtimeVisible[itemId]?.let { return it }
+        remoteOverrides["$SETTING_ITEM_STATE_PREFIX$itemId.visible"]
+            ?.toBooleanStrictOrNull()
+            ?.let { return it }
+        return SettingsPreferences.isSettingItemVisible(context, itemId)
+    }
+
+    /** 仅本次运行期显示，不写偏好，重启后仍按默认隐藏。 */
+    fun reveal(itemId: String) {
+        runtimeVisible[itemId] = true
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -117,10 +154,10 @@ fun SettingsMainContent(
 ) {
     val context = LocalContext.current
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    val aboutSettingVisibleState = RpcUiController.state
-        .map { it["settings.item.about_app.visible"]?.toBooleanStrictOrNull() }
+    val settingItemOverrides = RpcUiController.state
+        .map { state -> state.filterKeys { it.startsWith(SETTING_ITEM_STATE_PREFIX) } }
         .distinctUntilChanged()
-        .collectAsState(initial = null)
+        .collectAsState(initial = emptyMap())
         .value
     val supportIntentConfigJson = RpcUiController.state
         .map { it["settings.support_intent"] }
@@ -130,8 +167,12 @@ fun SettingsMainContent(
     val supportItemDisplay = remember(supportIntentConfigJson) {
         RpcUiController.supportIntentDisplay(supportIntentConfigJson)
     }
-    val aboutSettingVisible = aboutSettingVisibleState
-        ?: SettingsPreferences.isSettingItemVisible(context, "about_app")
+    // 设置页条目显隐统一入口：替换原来每个条目各自的 visible 状态变量
+    val settingVisibility = remember(context) { SettingsVisibility(context) }
+    settingVisibility.remoteOverrides = settingItemOverrides
+    // 连点标题：显示内嵌日志窗口，并临时显示默认隐藏的 RPC 设置项
+    var titleTapCount by remember { mutableIntStateOf(0) }
+    var titleLastTapAt by remember { mutableLongStateOf(0L) }
     
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -141,19 +182,22 @@ fun SettingsMainContent(
                 title = {
                     Text(
                         text = "${BuildConfig.APP_NAME}设置",
-                        modifier = Modifier.pointerInput(Unit) {
-                            var tapCount = 0
-                            var lastTapAt = 0L
-                            detectTapGestures {
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {
                                 val now = SystemClock.uptimeMillis()
-                                tapCount = if (now - lastTapAt <= 1500L) tapCount + 1 else 1
-                                lastTapAt = now
-                                if (tapCount == 4) {
+                                titleTapCount =
+                                    if (now - titleLastTapAt <= TITLE_MULTI_TAP_WINDOW_MS) titleTapCount + 1 else 1
+                                titleLastTapAt = now
+                                if (titleTapCount >= TITLE_MULTI_TAP_COUNT) {
                                     RpcUiController.setState("log.height.override.dp", "360")
-                                    tapCount = 0
+                                    settingVisibility.reveal(SettingItems.RPC)
+                                    titleTapCount = 0
                                 }
                             }
-                        }
                     )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -438,16 +482,18 @@ fun SettingsMainContent(
                 })
             }
 
-            item {
-                SettingsSection(title = "开发与调试", content = {
-                    SettingsItem(
-                        icon = Icons.TwoTone.Build,
-                        title = "RPC 设置",
-                        subtitle = "HTTP 端口、MQTT Broker、Topic 和公钥",
-                        onClick = onNavigateToRpc,
-                        showArrow = true
-                    )
-                })
+            if (settingVisibility.isVisible(SettingItems.RPC)) {
+                item {
+                    SettingsSection(title = "开发与调试", content = {
+                        SettingsItem(
+                            icon = Icons.TwoTone.Build,
+                            title = "RPC 设置",
+                            subtitle = "HTTP 端口、MQTT Broker、Topic 和公钥",
+                            onClick = onNavigateToRpc,
+                            showArrow = true
+                        )
+                    })
+                }
             }
 
             item {
@@ -466,7 +512,7 @@ fun SettingsMainContent(
                         },
                         showArrow = true
                     )
-                    if (aboutSettingVisible) {
+                    if (settingVisibility.isVisible(SettingItems.ABOUT_APP)) {
                         HorizontalDivider(
                             modifier = Modifier.padding(start = 56.dp),
                             thickness = 0.5.dp,

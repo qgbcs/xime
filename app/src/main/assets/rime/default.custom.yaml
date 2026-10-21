@@ -8,8 +8,9 @@
 
 patch:
   schema_list:
-    - schema: handwriting
     - schema: pinyin_simp
+    - schema: handwriting
+    - schema: t9_pinyin
 
   # Menu
   menu:

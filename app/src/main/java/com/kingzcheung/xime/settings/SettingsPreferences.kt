@@ -233,7 +233,7 @@ object SettingsPreferences {
     }
 
     fun isLauncherIconHidden(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_LAUNCHER_ICON_HIDDEN, true)
+        return getPrefs(context).getBoolean(KEY_LAUNCHER_ICON_HIDDEN, false)
     }
 
     fun setLauncherIconHidden(context: Context, hidden: Boolean) {
@@ -679,8 +679,10 @@ object SettingsPreferences {
 
     fun isSettingItemVisible(context: Context, itemId: String): Boolean {
         require(itemId.matches(Regex("[a-z][a-z0-9_]*"))) { "Invalid setting item ID: $itemId" }
-        val defaultVisible = itemId != "about_app"
-        return getPrefs(context).getBoolean("$KEY_SETTING_ITEM_VISIBLE_PREFIX$itemId", defaultVisible)
+        return getPrefs(context).getBoolean(
+            "$KEY_SETTING_ITEM_VISIBLE_PREFIX$itemId",
+            itemId !in SettingItems.hiddenByDefault
+        )
     }
 
     fun setSettingItemVisible(context: Context, itemId: String, visible: Boolean) {

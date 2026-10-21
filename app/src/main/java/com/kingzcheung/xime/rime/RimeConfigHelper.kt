@@ -42,6 +42,8 @@ object RimeConfigHelper {
         }
         
         copyAssetsToRimeDir(context, rimeDir)
+        // 旧版出厂默认方案集升级为当前默认：简体拼音 / 手写 / 拼音九键
+        SchemaManager.migrateLegacyDefaultSchemas(context)
         // F1: assets 会用内置 default.yaml 覆盖，这里把启用方案重新写回 schema_list
         SchemaManager.applyEnabledSchemasToDefaultYaml(context)
         // 为所有启用方案打个人词库补丁
@@ -114,6 +116,8 @@ object RimeConfigHelper {
         }
         
         copyAssetsToRimeDir(context, rimeDir)
+        // 旧版出厂默认方案集升级为当前默认：简体拼音 / 手写 / 拼音九键
+        SchemaManager.migrateLegacyDefaultSchemas(context)
         // F1: 同步初始化路径也写回 default.yaml 的 schema_list
         SchemaManager.applyEnabledSchemasToDefaultYaml(context)
         runBlocking { PersonalDictManager.ensureSchemaPacks(context) }

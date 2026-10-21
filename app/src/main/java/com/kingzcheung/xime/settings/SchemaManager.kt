@@ -70,6 +70,16 @@ internal data class SchemaEntry(
 object SchemaManager {
     private const val TAG = "SchemaManager"
     private const val CUSTOM_YAML = "default.custom.yaml"
+
+    /** 出厂默认启用方案：简体拼音（列表首个即默认输入方案）、手写、拼音九键。 */
+    val DEFAULT_ENABLED_SCHEMAS = listOf("pinyin_simp", "handwriting", "t9_pinyin")
+
+    /** 历史版本的出厂默认方案集：仅这些列表说明用户没有自定义过，升级时迁移为当前出厂默认。 */
+    private val LEGACY_DEFAULT_ENABLED_SCHEMAS = setOf(
+        listOf("handwriting", "pinyin_simp"),
+        listOf("pinyin_simp", "handwriting"),
+        listOf("pinyin_simp", "wubi86", "wubi86_pinyin", "t9_pinyin"),
+    )
     internal val yaml = Yaml(configuration = YamlConfiguration(strictMode = false, anchorsAndAliases = com.charleskorn.kaml.AnchorsAndAliases.Permitted(maxAliasCount = UInt.MAX_VALUE)))
 
     private val downloadClient = OkHttpClient.Builder()
@@ -760,9 +770,8 @@ object SchemaManager {
     fun getEnabledSchemas(context: Context): List<String> {
         val customFile = getCustomYamlFile(context)
         if (!customFile.exists()) {
-            val defaultBuiltIn = listOf("pinyin_simp", "wubi86", "wubi86_pinyin", "t9_pinyin")
-            setEnabledSchemas(context, defaultBuiltIn)
-            return defaultBuiltIn
+            setEnabledSchemas(context, DEFAULT_ENABLED_SCHEMAS)
+            return DEFAULT_ENABLED_SCHEMAS
         }
 
         try {
@@ -789,7 +798,30 @@ object SchemaManager {
             Log.e(TAG, "Failed to read custom.yaml", e)
         }
 
-        return listOf("pinyin_simp", "handwriting")
+        return DEFAULT_ENABLED_SCHEMAS
+    }
+
+    /**
+     * 升级迁移：旧版出厂默认方案集（手写在前、或五笔组合）替换为当前出厂默认。
+     * 仅当启用列表仍与某个历史出厂值完全一致时才改写——此时可认为用户从未自定义过方案集，
+     * 列表一旦被用户改动过就保持不变。
+     *
+     * 只替换 default.custom.yaml 里的 schema_list 块，保留文件内其余 patch
+     * （键位、标点、菜单等设置），避免迁移把用户的其它自定义一起清掉。
+     */
+    fun migrateLegacyDefaultSchemas(context: Context) {
+        val customFile = getCustomYamlFile(context)
+        // 没有 custom 文件说明是全新部署，getEnabledSchemas 会直接写入当前出厂默认
+        if (!customFile.exists()) return
+        val enabled = getEnabledSchemas(context)
+        if (enabled !in LEGACY_DEFAULT_ENABLED_SCHEMAS) return
+        try {
+            customFile.writeText(replaceSchemaListBlock(customFile.readText(), DEFAULT_ENABLED_SCHEMAS))
+            applyEnabledSchemasToDefaultYaml(context, DEFAULT_ENABLED_SCHEMAS)
+            Log.i(TAG, "Migrate legacy default schemas $enabled -> $DEFAULT_ENABLED_SCHEMAS")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to migrate legacy default schemas", e)
+        }
     }
 
     fun setEnabledSchemas(context: Context, schemaIds: List<String>) {

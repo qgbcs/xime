@@ -404,7 +404,7 @@ object RpcUiController {
         }
     }
 
-    /** RPC：控制设置页条目显隐；about_app 默认隐藏。 */
+    /** RPC：控制设置页条目显隐；默认隐藏项见 [com.kingzcheung.xime.settings.SettingItems.hiddenByDefault]。 */
     @JvmStatic
     fun setSettingItemVisible(itemId: String, visible: Boolean) {
         val appContext = checkNotNull(context) { "controller_not_initialized" }
@@ -412,7 +412,7 @@ object RpcUiController {
         setState("settings.item.$itemId.visible", visible.toString())
     }
 
-    /** RPC：查询设置页条目是否显示；about_app 默认隐藏。 */
+    /** RPC：查询设置页条目是否显示；默认隐藏项见 [com.kingzcheung.xime.settings.SettingItems.hiddenByDefault]。 */
     @JvmStatic
     fun isSettingItemVisible(itemId: String): Boolean {
         val appContext = checkNotNull(context) { "controller_not_initialized" }

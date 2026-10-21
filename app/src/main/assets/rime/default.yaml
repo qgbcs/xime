@@ -4,9 +4,9 @@
 config_version: "0.36"
 
 schema_list:
-  - schema: wubi86_pinyin
-  - schema: wubi86
   - schema: pinyin_simp
+  - schema: handwriting
+  - schema: t9_pinyin
 
 switcher:
   caption: "〔方案选单〕"
