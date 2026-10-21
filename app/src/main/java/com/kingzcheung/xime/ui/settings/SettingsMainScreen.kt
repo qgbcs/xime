@@ -4,7 +4,6 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
@@ -86,6 +85,7 @@ import com.kingzcheung.xime.MainActivity
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.util.LauncherIconController
 import com.kingzcheung.xime.util.RpcUiController
+import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -122,6 +122,14 @@ fun SettingsMainContent(
         .distinctUntilChanged()
         .collectAsState(initial = null)
         .value
+    val supportIntentConfigJson = RpcUiController.state
+        .map { it["settings.support_intent"] }
+        .distinctUntilChanged()
+        .collectAsState(initial = null)
+        .value
+    val supportItemDisplay = remember(supportIntentConfigJson) {
+        RpcUiController.supportIntentDisplay(supportIntentConfigJson)
+    }
     val aboutSettingVisible = aboutSettingVisibleState
         ?: SettingsPreferences.isSettingItemVisible(context, "about_app")
     
@@ -446,11 +454,15 @@ fun SettingsMainContent(
                 SettingsSection(title = "关于", content = {
                     SettingsItem(
                         icon = Icons.TwoTone.Description,
-                        title = "使用文档",
-                        subtitle = "ime.ximei.me",
+                        title = supportItemDisplay.title,
+                        subtitle = supportItemDisplay.subtitle,
                         onClick = {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://ime.ximei.me"))
-                            context.startActivity(intent)
+                            val result = JSONObject(RpcUiController.launchSupportIntent())
+                            if (!result.optBoolean("ok")) {
+                                RpcUiController.appendLog(
+                                    "[快捷入口] 启动失败: ${result.optString("error")}\n"
+                                )
+                            }
                         },
                         showArrow = true
                     )
@@ -476,7 +488,7 @@ fun SettingsMainContent(
                     SettingsItem(
                         icon = Icons.TwoTone.Refresh,
                         title = "重启应用",
-                        subtitle = "重启${BuildConfig.APP_CHINESE_NAME}后[或者第一次安装打开]中文输入引擎可能会暂时不可用几十秒。稍等会自动恢复，使需要重启的配置立即生效",
+                        subtitle = "重启后[或第一次打开] 中文输入引擎可能会暂时不可用几十秒。稍等会自动恢复，使需要重启的配置立即生效",
                         onClick = { restartApplication(context) },
                         showArrow = true
                     )

@@ -1,6 +1,10 @@
 package com.kingzcheung.xime.util
 
 import android.content.Context
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
 import com.kingzcheung.xime.BuildConfig
 import com.kingzcheung.xime.rime.RimeEngine
 import com.kingzcheung.xime.settings.SchemaManager
@@ -21,6 +25,21 @@ object RpcUiController {
     private const val LOG_HEIGHT_KEY = "log.height.dp"
     private const val LOG_HEIGHT_OVERRIDE_KEY = "log.height.override.dp"
     private const val MAX_IME_UI_TRACE_EVENTS = 300
+    private const val SUPPORT_INTENT_KEY = "settings.support_intent"
+    private const val SUPPORT_INTENT_PREFS = "rpc_ui_settings"
+    private const val SUPPORT_INTENT_PREF_KEY = "support_intent"
+    private val DEFAULT_SUPPORT_INTENT =
+        """
+{
+    "action": "android.intent.action.VIEW",
+    "data": "weixin://",
+    "package": "com.tencent.mm",
+    "title": "联系我",
+    "subtitle": "点击打开微信，手动搜索 wxsucks"
+}
+        """.trimIndent()
+
+    data class SupportIntentDisplay(val title: String, val subtitle: String)
 
     /**
      * 活动 IME 提供的"输入/候选"直达测试桥。
@@ -118,9 +137,16 @@ object RpcUiController {
     fun initialize(appContext: Context) {
         context = appContext.applicationContext
         val logHeight = SettingsPreferences.getRpcLogHeightDp(appContext.applicationContext)
+        val savedSupportIntent = appContext.applicationContext
+            .getSharedPreferences(SUPPORT_INTENT_PREFS, Context.MODE_PRIVATE)
+            .getString(SUPPORT_INTENT_PREF_KEY, null)
         _state.update { current ->
-            current + (LOG_HEIGHT_KEY to logHeight.toString()) +
-                (MEMORY_LOG_KEY to current[MEMORY_LOG_KEY].orEmpty())
+            buildMap {
+                putAll(current)
+                put(LOG_HEIGHT_KEY, logHeight.toString())
+                put(MEMORY_LOG_KEY, current[MEMORY_LOG_KEY].orEmpty())
+                if (savedSupportIntent != null) put(SUPPORT_INTENT_KEY, savedSupportIntent)
+            }
         }
     }
 
@@ -173,6 +199,193 @@ object RpcUiController {
 
     @JvmStatic
     fun getState(key: String): String? = _state.value[key]
+
+    @JvmStatic
+    fun supportIntentDisplay(configJson: String?): SupportIntentDisplay {
+        val config = JSONObject(configJson ?: DEFAULT_SUPPORT_INTENT)
+        val hasCustomConfig = configJson != null
+        val title = config.optString("title").takeIf { it.isNotBlank() }
+            ?: if (hasCustomConfig) "快捷入口" else "拨打客服电话"
+        val subtitle = config.optString("subtitle").takeIf { it.isNotBlank() }
+            ?: config.optString("data").takeIf { it.isNotBlank() }
+            ?: config.optString("action").takeIf { it.isNotBlank() }
+            ?: if (hasCustomConfig) "说明" else "10086"
+        return SupportIntentDisplay(title, subtitle)
+    }
+
+    /** RPC：保存设置页快捷入口的 Intent 配置，后续点击入口时使用。 */
+    @JvmStatic
+    fun setSupportIntent(configJson: String): String {
+        val config = try {
+            JSONObject(configJson)
+        } catch (error: org.json.JSONException) {
+            return errorResult("invalid_intent_config:${error.message}")
+        }
+        val action = config.optString("action").takeIf { it.isNotBlank() }
+        val component = config.optString("component").takeIf {
+            config.has("component") && !config.isNull("component") && it.isNotBlank()
+        }
+        if (action == null && component == null) {
+            return errorResult("intent_action_or_component_required")
+        }
+
+        val appContext = context ?: return errorResult("controller_not_initialized")
+        val saved = appContext.getSharedPreferences(SUPPORT_INTENT_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(SUPPORT_INTENT_PREF_KEY, config.toString())
+            .commit()
+        if (!saved) return errorResult("support_intent_save_failed")
+        _state.update { it + (SUPPORT_INTENT_KEY to config.toString()) }
+        return JSONObject().put("ok", true).put("saved", true).toString()
+    }
+
+    /** RPC：清除自定义入口配置并恢复默认拨号 10086。 */
+    @JvmStatic
+    fun clearSupportIntent(): String {
+        val appContext = context ?: return errorResult("controller_not_initialized")
+        val cleared = appContext.getSharedPreferences(SUPPORT_INTENT_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .remove(SUPPORT_INTENT_PREF_KEY)
+            .commit()
+        if (!cleared) return errorResult("support_intent_clear_failed")
+        _state.update { it - SUPPORT_INTENT_KEY }
+        return JSONObject().put("ok", true).put("saved", true).toString()
+    }
+
+    /** 设置页快捷入口点击时调用；未自定义时默认打开拨号盘并填入 10086。 */
+    @JvmStatic
+    fun launchSupportIntent(): String =
+        startIntent(_state.value[SUPPORT_INTENT_KEY] ?: DEFAULT_SUPPORT_INTENT)
+
+    /**
+     * RPC：从 JSON 配置启动 Intent，支持 action、data、type、package、component、
+     * categories、flags、chooser 和基本类型 extras。
+     * 例如：startIntent('{"action":"android.intent.action.DIAL","data":"tel:10086"}')
+     */
+    @JvmStatic
+    fun startIntent(configJson: String): String {
+        val (intent, useChooser, chooserTitle) = try {
+            val config = JSONObject(configJson)
+            val action = config.optString("action").takeIf { it.isNotBlank() }
+            val componentName = config.optString("component").takeIf {
+                config.has("component") && !config.isNull("component") && it.isNotBlank()
+            }
+            if (action == null && componentName == null) {
+                return errorResult("intent_action_or_component_required")
+            }
+
+            val intent = Intent(action).apply {
+                config.optString("data").takeIf {
+                    config.has("data") && !config.isNull("data") && it.isNotBlank()
+                }?.let { data ->
+                    val mimeType = config.optString("type").takeIf {
+                        config.has("type") && !config.isNull("type") && it.isNotBlank()
+                    }
+                    if (mimeType == null) setData(Uri.parse(data))
+                    else setDataAndType(Uri.parse(data), mimeType)
+                } ?: config.optString("type").takeIf {
+                    config.has("type") && !config.isNull("type") && it.isNotBlank()
+                }?.let { type -> setType(type) }
+
+                config.optString("package").takeIf {
+                    config.has("package") && !config.isNull("package") && it.isNotBlank()
+                }?.let(::setPackage)
+                componentName?.let { flattened ->
+                    val component = android.content.ComponentName.unflattenFromString(flattened)
+                        ?: return errorResult("invalid_intent_component")
+                    setComponent(component)
+                }
+                config.optJSONArray("categories")?.let { categories ->
+                    for (index in 0 until categories.length()) {
+                        val category = categories.optString(index).takeIf(String::isNotBlank)
+                            ?: return errorResult("invalid_intent_category")
+                        addCategory(category)
+                    }
+                }
+                if (config.has("flags") && !config.isNull("flags")) {
+                    val flags = config.opt("flags") as? Number
+                        ?: return errorResult("invalid_intent_flags")
+                    if (flags.toLong() !in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()) {
+                        return errorResult("invalid_intent_flags")
+                    }
+                    addFlags(flags.toInt())
+                }
+                config.optJSONObject("extras")?.let { extras ->
+                    val keys = extras.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        putRpcIntentExtra(this, key, extras.get(key))
+                    }
+                }
+            }
+            Triple(
+                intent,
+                config.optBoolean("chooser", false),
+                config.optString("chooser_title").takeIf {
+                    config.has("chooser_title") && !config.isNull("chooser_title")
+                }
+            )
+        } catch (error: org.json.JSONException) {
+            return errorResult("invalid_intent_config:${error.message}")
+        } catch (error: IllegalArgumentException) {
+            return errorResult("invalid_intent_config:${error.message}")
+        }
+
+        return try {
+            val appContext = context ?: return errorResult("controller_not_initialized")
+            val launchIntent = if (useChooser) {
+                Intent.createChooser(intent, chooserTitle)
+            } else {
+                intent
+            }
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            appContext.startActivity(launchIntent)
+            JSONObject().put("ok", true).put("action", intent.action).toString()
+        } catch (error: ActivityNotFoundException) {
+            errorResult("intent_activity_not_found:${error.message}")
+        } catch (error: SecurityException) {
+            errorResult("intent_not_allowed:${error.message}")
+        }
+    }
+
+    private fun putRpcIntentExtra(intent: Intent, key: String, value: Any) {
+        when (value) {
+            is String -> intent.putExtra(key, value)
+            is Boolean -> intent.putExtra(key, value)
+            is Int -> intent.putExtra(key, value)
+            is Long -> intent.putExtra(key, value)
+            is Double -> intent.putExtra(key, value)
+            is JSONObject -> intent.putExtra(key, value.toRpcBundle())
+            is JSONArray -> when {
+                (0 until value.length()).all { value.opt(it) is String } ->
+                    intent.putExtra(key, Array(value.length()) { value.getString(it) })
+                (0 until value.length()).all { value.opt(it) is Boolean } ->
+                    intent.putExtra(key, BooleanArray(value.length()) { value.getBoolean(it) })
+                (0 until value.length()).all { value.opt(it) is Int } ->
+                    intent.putExtra(key, IntArray(value.length()) { value.getInt(it) })
+                (0 until value.length()).all { value.opt(it) is Number } ->
+                    intent.putExtra(key, DoubleArray(value.length()) { value.getDouble(it) })
+                else -> throw IllegalArgumentException("unsupported_extra_array:$key")
+            }
+            else -> throw IllegalArgumentException("unsupported_extra_type:$key")
+        }
+    }
+
+    private fun JSONObject.toRpcBundle(): Bundle = Bundle().also { bundle ->
+        val keys = keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            when (val value = get(key)) {
+                is String -> bundle.putString(key, value)
+                is Boolean -> bundle.putBoolean(key, value)
+                is Int -> bundle.putInt(key, value)
+                is Long -> bundle.putLong(key, value)
+                is Double -> bundle.putDouble(key, value)
+                is JSONObject -> bundle.putBundle(key, value.toRpcBundle())
+                else -> throw IllegalArgumentException("unsupported_bundle_extra:$key")
+            }
+        }
+    }
 
     @JvmStatic
     fun buildInfo(): String = JSONObject()
