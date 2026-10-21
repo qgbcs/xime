@@ -2,6 +2,7 @@ package com.kingzcheung.xime.settings
 
 import android.content.Context
 import androidx.test.platform.app.InstrumentationRegistry
+import com.kingzcheung.xime.util.RpcUiController
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -46,12 +47,28 @@ class SettingsPreferencesTest {
     fun rpcLogAndLauncherDefaultsAreSecure() {
         assertFalse(SettingsPreferences.isRpcLogToDiskEnabled(context))
         assertTrue(SettingsPreferences.isLauncherIconHidden(context))
+        assertEquals(1f, SettingsPreferences.getRpcLogHeightDp(context))
 
         SettingsPreferences.setRpcLogToDiskEnabled(context, true)
+        SettingsPreferences.setRpcLogHeightDp(context, 20f)
         SettingsPreferences.setLauncherIconHidden(context, false)
 
         assertTrue(SettingsPreferences.isRpcLogToDiskEnabled(context))
+        assertEquals(20f, SettingsPreferences.getRpcLogHeightDp(context))
         assertFalse(SettingsPreferences.isLauncherIconHidden(context))
+    }
+
+    @Test
+    fun rpcLogHeightStatePersistsAndTemporaryOverrideDoesNot() {
+        RpcUiController.initialize(context)
+        RpcUiController.setState("log.height.dp", "20")
+
+        assertEquals("20.0", RpcUiController.getState("log.height.dp"))
+        assertEquals(20f, SettingsPreferences.getRpcLogHeightDp(context))
+
+        RpcUiController.setState("log.height.override.dp", "360")
+
+        assertEquals(20f, SettingsPreferences.getRpcLogHeightDp(context))
     }
 
     @Test

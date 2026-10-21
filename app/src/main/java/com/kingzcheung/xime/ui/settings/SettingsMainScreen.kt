@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -76,6 +77,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -128,7 +130,24 @@ fun SettingsMainContent(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             MediumTopAppBar(
-                title = { Text("${BuildConfig.APP_NAME}设置") },
+                title = {
+                    Text(
+                        text = "${BuildConfig.APP_NAME}设置",
+                        modifier = Modifier.pointerInput(Unit) {
+                            var tapCount = 0
+                            var lastTapAt = 0L
+                            detectTapGestures {
+                                val now = SystemClock.uptimeMillis()
+                                tapCount = if (now - lastTapAt <= 1500L) tapCount + 1 else 1
+                                lastTapAt = now
+                                if (tapCount == 4) {
+                                    RpcUiController.setState("log.height.override.dp", "360")
+                                    tapCount = 0
+                                }
+                            }
+                        }
+                    )
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
                     scrolledContainerColor = MaterialTheme.colorScheme.surface,
@@ -457,7 +476,7 @@ fun SettingsMainContent(
                     SettingsItem(
                         icon = Icons.TwoTone.Refresh,
                         title = "重启应用",
-                        subtitle = "重新启动${BuildConfig.APP_CHINESE_NAME}，使需要重启的配置立即生效",
+                        subtitle = "重启${BuildConfig.APP_CHINESE_NAME}后[或者第一次安装打开]中文输入引擎可能会暂时不可用几十秒。稍等会自动恢复，使需要重启的配置立即生效",
                         onClick = { restartApplication(context) },
                         showArrow = true
                     )
@@ -509,7 +528,7 @@ private fun PermissionRequestPanel(onNavigateToPermissions: () -> Unit) {
         SettingsItem(
             icon = Icons.TwoTone.Security,
             title = "权限设置",
-            subtitle = "查看并申请 Manifest 中声明的权限",
+            subtitle = "请授予所有权限",
             onClick = onNavigateToPermissions,
             showArrow = true
         )
@@ -550,11 +569,13 @@ private fun InlineLogView() {
     val coroutineScope = rememberCoroutineScope()
     val uiState = RpcUiController.state.collectAsState().value
     val logVisible = uiState["log.visible"]?.toBooleanStrictOrNull() ?: true
-    val logHeight = uiState["log.height.dp"]
+    //日志高度默认值另有一处：SettingsPreferences.getRpcLogHeightDp() 在 SettingsPreferences.kt 中用 1f 作为 SharedPreferences 未存值时的默认值。 优先使用标题四击的临时高度，其次使用 RPC 持久高度；无效或缺失时回退到 1 dp，最大限制为 1000 dp。
+    val logHeight = (uiState["log.height.override.dp"] ?: uiState["log.height.dp"])
         ?.toFloatOrNull()
-        ?.coerceIn(120f, 1000f)
+        ?.takeIf { it.isFinite() && it >= 0f }
+        ?.coerceAtMost(1000f)
         ?.dp
-        ?: 360.dp
+        ?: 1.dp
     val logBackground = uiState["log.background"]
         ?.let { value -> runCatching { Color(android.graphics.Color.parseColor(value)) }.getOrNull() }
         ?: MaterialTheme.colorScheme.surfaceVariant
@@ -590,29 +611,29 @@ private fun InlineLogView() {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .height(logHeight)
             .clip(RoundedCornerShape(12.dp))
             .background(logBackground)
             .padding(12.dp)
     ) {
-        Text(
-            text = "运行日志",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        SelectionContainer {
-            Text(
-                text = logText.ifEmpty { "暂无日志" },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(logHeight)
-                    .verticalScroll(scrollState)
-                    .then(if (autoWrap) Modifier else Modifier.horizontalScroll(horizontalScrollState))
-                    .padding(top = 8.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.bodySmall,
-                softWrap = autoWrap
-            )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            SelectionContainer(modifier = Modifier.fillMaxSize()) {
+                Text(
+                    text = logText.ifEmpty { "暂无日志" },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState)
+                        .then(if (autoWrap) Modifier else Modifier.horizontalScroll(horizontalScrollState)),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall,
+                    softWrap = autoWrap
+                )
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth(),

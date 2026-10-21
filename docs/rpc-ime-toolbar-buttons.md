@@ -31,10 +31,6 @@
 手写找字按钮只有在设备已具备手写模型时才会出现在可选列表中。设置该 ID 不会安装模型或绕过这一条件。
 
 ## 查询当前配置
-
-从本地 Python RPC 客户端向目标设备执行：
-
-```python
 code = r'''
 from com.kingzcheung.xime import XimeApplication
 from com.kingzcheung.xime.keyboard import ToolbarButton
@@ -43,59 +39,35 @@ app = XimeApplication.getInstance()
 prefs = app.getSharedPreferences("kime_settings", 0)
 raw = prefs.getString("toolbar_buttons", "")
 buttons = [item for item in str(raw).split(",") if item]
-available = [str(button.getId()) for button in ToolbarButton.values()]
-print({"stored": buttons, "available_ids": available})
+r=buttons
 '''
-```
 
-若 `stored` 是空列表，表示偏好中已保存空配置；新安装且尚未保存过此项时，`getToolbarButtons()` 会返回上面的默认顺序。该值与 `RpcUiController.getState()` 无关：`getState()` 读取的是进程内临时 UI 状态，不是这个持久化偏好。
 
-将上面的 `code` 变量传给本地 `client_mqtt.rpc(code, request_topic="设备 topic", ...)` 即可执行；本地 RPC 客户端调用不属于手机端代码。
 
 ## 修改按钮
 
 将 `buttons` 改为需要显示的 ID 列表。以下示例设置表情、剪贴板、方案选择，并按该顺序显示：
 
-```python
 code = r'''
 from com.kingzcheung.xime import XimeApplication
 from com.kingzcheung.xime.keyboard import ToolbarButton
 
 app = XimeApplication.getInstance()
 prefs = app.getSharedPreferences("kime_settings", 0)
-buttons = ["emoji", "clipboard", "schema"]
+buttons = ["emoji",'edit', 'home', 'end', 'copy', 'paste', 'clipboard']
 available = {str(button.getId()) for button in ToolbarButton.values()}
 unknown = [button for button in buttons if button not in available]
 if unknown:
     raise ValueError("未知候选栏按钮 ID: " + ", ".join(unknown))
 
 prefs.edit().putString("toolbar_buttons", ",".join(buttons)).apply()
-print({"saved": [item for item in str(prefs.getString("toolbar_buttons", "")).split(",") if item]})
 '''
-```
+ 设置以后必须重启 才能有效
 
-将 `buttons` 设为 `[]` 会清空可选按钮。也可以执行下面这段完整 RPC 代码：
 
-```python
-code = r'''
-from com.kingzcheung.xime import XimeApplication
 
-app = XimeApplication.getInstance()
-prefs = app.getSharedPreferences("kime_settings", 0)
-prefs.edit().putString("toolbar_buttons", "").apply()
-print({"stored": ""})
-'''
-```
-
-## 生效时间与验证
-
-输入法设置界面的候选栏自定义面板会通过同一个偏好键保存按钮，并立即更新当前键盘的 UI 状态。通过 RPC 直接写入偏好时，没有 RPC 接口通知活动输入法服务刷新这项状态；`toolbar_buttons` 也没有注册为独立的 SharedPreferences 即时监听键。
-
-因此，RPC 写入成功后应重新触发输入法输入会话（例如切换到其他输入框再回来；必要时关闭并重新打开输入法），然后检查候选栏。服务开始新的输入会话时会重新读取偏好。若只在当前已打开的候选栏里观察，可能暂时仍看到旧按钮。
-
-确认持久化结果时，再运行“查询当前配置”命令。`stored` 反映 SharedPreferences 中保存的真实值；它不单独证明当前屏幕已经刷新。
-
-## 实现位置
+ 
+ ## 实现位置
 
 - 按钮 ID、名称和默认集合：`app/src/main/java/com/kingzcheung/xime/keyboard/ToolbarButton.kt`
 - 偏好键及读写：`app/src/main/java/com/kingzcheung/xime/settings/SettingsPreferences.kt`

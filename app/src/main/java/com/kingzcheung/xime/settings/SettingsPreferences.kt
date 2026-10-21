@@ -17,6 +17,7 @@ object SettingsPreferences {
     private const val KEY_VERBOSE_LOGGING = "verbose_logging"
     private const val KEY_RPC_LOG_TO_DISK = "rpc_log_to_disk"
     private const val KEY_RPC_LOG_AUTO_WRAP = "rpc_log_auto_wrap"
+    private const val KEY_RPC_LOG_HEIGHT_DP = "rpc_log_height_dp"
     private const val KEY_LAUNCHER_ICON_HIDDEN = "launcher_icon_hidden"
     private const val KEY_SETTING_ITEM_VISIBLE_PREFIX = "setting_item_visible_"
     
@@ -220,6 +221,15 @@ object SettingsPreferences {
 
     fun setRpcLogAutoWrapEnabled(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_RPC_LOG_AUTO_WRAP, enabled).apply()
+    }
+
+    fun getRpcLogHeightDp(context: Context): Float {
+        return getPrefs(context).getFloat(KEY_RPC_LOG_HEIGHT_DP, 1f)
+    }
+
+    fun setRpcLogHeightDp(context: Context, heightDp: Float) {
+        require(heightDp.isFinite() && heightDp >= 0f) { "RPC log height must be a finite non-negative value" }
+        getPrefs(context).edit().putFloat(KEY_RPC_LOG_HEIGHT_DP, heightDp.coerceAtMost(1000f)).apply()
     }
 
     fun isLauncherIconHidden(context: Context): Boolean {

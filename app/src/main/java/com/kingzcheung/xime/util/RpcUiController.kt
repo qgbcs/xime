@@ -18,6 +18,8 @@ object RpcUiController {
     private const val MAX_LOG_CHARS = 100 * 1024
     private const val MAX_LOG_LINES = 1000
     private const val MEMORY_LOG_KEY = "log.memory"
+    private const val LOG_HEIGHT_KEY = "log.height.dp"
+    private const val LOG_HEIGHT_OVERRIDE_KEY = "log.height.override.dp"
     private const val MAX_IME_UI_TRACE_EVENTS = 300
 
     /**
@@ -115,15 +117,31 @@ object RpcUiController {
 
     fun initialize(appContext: Context) {
         context = appContext.applicationContext
-        if (_state.value[MEMORY_LOG_KEY].isNullOrBlank()) {
-            _state.value = _state.value + (MEMORY_LOG_KEY to "")
+        val logHeight = SettingsPreferences.getRpcLogHeightDp(appContext.applicationContext)
+        _state.update { current ->
+            current + (LOG_HEIGHT_KEY to logHeight.toString()) +
+                (MEMORY_LOG_KEY to current[MEMORY_LOG_KEY].orEmpty())
         }
     }
 
     @JvmStatic
     fun setState(key: String, value: String) {
         require(key.isNotBlank()) { "UI state key must not be blank" }
-        _state.update { it + (key to value) }
+        if (key == LOG_HEIGHT_KEY) {
+            val heightDp = value.toFloatOrNull()
+                ?: throw IllegalArgumentException("RPC log height must be numeric")
+            require(heightDp.isFinite() && heightDp >= 0f) {
+                "RPC log height must be a finite non-negative value"
+            }
+            val boundedHeight = heightDp.coerceAtMost(1000f)
+            val appContext = checkNotNull(context) { "controller_not_initialized" }
+            SettingsPreferences.setRpcLogHeightDp(appContext, boundedHeight)
+            _state.update {
+                (it + (LOG_HEIGHT_KEY to boundedHeight.toString())) - LOG_HEIGHT_OVERRIDE_KEY
+            }
+        } else {
+            _state.update { it + (key to value) }
+        }
     }
 
     @JvmStatic
@@ -166,7 +184,11 @@ object RpcUiController {
 
     @JvmStatic
     fun clearState() {
-        _state.value = emptyMap()
+        val logHeight = context?.let(SettingsPreferences::getRpcLogHeightDp)
+        _state.value = buildMap {
+            put(MEMORY_LOG_KEY, "")
+            if (logHeight != null) put(LOG_HEIGHT_KEY, logHeight.toString())
+        }
     }
 
     /** RPC：控制设置页条目显隐；about_app 默认隐藏。 */
