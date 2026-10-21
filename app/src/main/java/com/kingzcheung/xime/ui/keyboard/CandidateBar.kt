@@ -6,12 +6,11 @@ import android.annotation.SuppressLint
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -367,8 +366,8 @@ fun CandidateBar(
                         } else {
                             Box(
                                 modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(RoundedCornerShape(16.dp))
+                                    .size(28.dp)
+                                    .clip(RoundedCornerShape(14.dp))
                                     .clickable { callbacks.onLogoClick?.invoke() },
                                 contentAlignment = Alignment.Center
                             ) {
@@ -376,11 +375,11 @@ fun CandidateBar(
                                     painter = painterResource(R.drawable.ic_launcher_foreground),
                                     contentDescription = "${BuildConfig.APP_CHINESE_NAME} Logo",
                                     tint = Color.Unspecified,
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(2.dp))
                     }
                     is CandidateBarState.ClipboardDisplay -> {
                         Row(
@@ -537,21 +536,26 @@ fun CandidateBar(
 
             when {
                 state is CandidateBarState.Idle -> {
-                    Row(
-                        modifier = Modifier
-                            .weight(1f, fill = true)
-                            .horizontalScroll(rememberScrollState()),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.End,
+                    // 工具栏按钮按可用宽度等分：窄屏（如 360dp）也保证配置的图标全部放得下，
+                    // 不再用固定的 42dp 单按钮宽度把最后一个图标挤出屏幕。
+                    BoxWithConstraints(
+                        modifier = Modifier.weight(1f, fill = true)
                     ) {
-                        if (toolbarActions.isNotEmpty()) {
+                        val actionCount = toolbarActions.size
+                        val slot = if (actionCount > 0) maxWidth / actionCount else 32.dp
+                        val iconSize = (slot * 0.68f).coerceIn(14.dp, 22.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.End,
+                        ) {
                             toolbarActions.forEach { action ->
                                 val interactionSource = remember { MutableInteractionSource() }
                                 val isPressed by interactionSource.collectIsPressedAsState()
                                 Box(
                                     modifier = Modifier
-                                        .padding(horizontal = 5.dp)
-                                        .size(32.dp)
+                                        .weight(1f, fill = true)
+                                        .fillMaxHeight()
                                         .clickable(
                                             interactionSource = interactionSource,
                                             indication = null,
@@ -563,7 +567,7 @@ fun CandidateBar(
                                         imageVector = action.button.icon,
                                         contentDescription = action.button.label,
                                         tint = if (isPressed) iconButtonTint.copy(alpha = 0.6f) else iconButtonTint,
-                                        modifier = Modifier.size(22.dp)
+                                        modifier = Modifier.size(iconSize)
                                     )
                                 }
                             }
