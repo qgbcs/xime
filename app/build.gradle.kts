@@ -102,10 +102,48 @@ val generateAppIconResources = tasks.register<Sync>("generateAppIconResources") 
     require(iconExtension in setOf("png", "webp", "xml")) {
         "APP_ICON_PATH must point to a PNG, WebP, or Android vector XML file: $iconFile"
     }
+    // 图标不能放进 drawable（默认密度桶按 mdpi 处理）：高密度设备会按 density/160 放大，
+    // 1760px 的 PNG 在 560dpi 下被放大成 6160px（约 145MB），绘制时触发
+    // "Canvas: trying to draw too large" 崩溃。nodpi 桶不做密度缩放。
+    // Sync 的根目录设为生成目录，顺带清掉旧版本遗留在 drawable/ 下的图标。
+    val generatedDir = generatedAppIconResources.get().asFile
     inputs.file(iconFile)
-    from(iconFile)
-    into(generatedAppIconResources.map { it.dir("drawable") })
-    rename { "ic_launcher_foreground.$iconExtension" }
+    into(generatedDir)
+    from(iconFile) {
+        into("drawable-nodpi")
+        rename { "ic_launcher_foreground.$iconExtension" }
+    }
+    doLast {
+        if (iconExtension != "png") return@doLast
+        // 大图标缩到图标够用的尺寸，避免输入法内存里常驻十几 MB 位图。
+        // 用 python3 + Pillow 处理：Gradle 脚本的编译类路径不含 java.awt，且项目构建本就依赖 python3。
+        // 没有 python3/Pillow 时保留原图，drawable-nodpi 已能保证不触发密度放大崩溃。
+        val target = generatedDir.resolve("drawable-nodpi/ic_launcher_foreground.png")
+        val maxSize = 432
+        val script = """
+            import sys
+            try:
+                from PIL import Image
+            except Exception:
+                sys.exit(3)
+            path, limit = sys.argv[1], int(sys.argv[2])
+            image = Image.open(path).convert("RGBA")
+            scale = limit / max(image.size)
+            if scale < 1:
+                size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+                image.resize(size, Image.LANCZOS).save(path, "PNG")
+        """.trimIndent()
+        try {
+            val process = ProcessBuilder(
+                "python3", "-c", script, target.absolutePath, maxSize.toString()
+            ).redirectErrorStream(true).start()
+            // 先把输出读完，避免管道写满阻塞。
+            process.inputStream.bufferedReader().readText()
+            process.waitFor()
+        } catch (_: java.io.IOException) {
+            // 本机没有 python3 时跳过缩放。
+        }
+    }
 }
 val configuredApplicationId = providers.gradleProperty("applicationId")
     .orElse("com.kingzcheung.xime")
