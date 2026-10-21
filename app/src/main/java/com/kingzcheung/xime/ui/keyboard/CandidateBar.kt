@@ -369,7 +369,6 @@ fun CandidateBar(
                                 modifier = Modifier
                                     .size(32.dp)
                                     .clip(RoundedCornerShape(16.dp))
-                                    .background(iconButtonContainer)
                                     .clickable { callbacks.onLogoClick?.invoke() },
                                 contentAlignment = Alignment.Center
                             ) {

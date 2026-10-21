@@ -68,7 +68,7 @@ class SettingsPreferencesTest {
 
     @Test
     fun soundAndVibrationDefaultsAndUpdatesWork() {
-        assertTrue(SettingsPreferences.isSoundEnabled(context))
+        assertFalse(SettingsPreferences.isSoundEnabled(context))
         assertEquals(50, SettingsPreferences.getSoundVolume(context))
         assertTrue(SettingsPreferences.isVibrationEnabled(context))
         assertEquals(50, SettingsPreferences.getVibrationIntensity(context))
@@ -262,6 +262,11 @@ class SettingsPreferencesTest {
     
     @Test
     fun toolbarButtonsPersist() {
+        assertEquals(
+            listOf("emoji", "edit", "home", "end", "copy", "paste", "clipboard"),
+            SettingsPreferences.getToolbarButtons(context)
+        )
+
         SettingsPreferences.setToolbarButtons(context, listOf("symbols", "clipboard"))
         assertEquals(listOf("symbols", "clipboard"), SettingsPreferences.getToolbarButtons(context))
         
@@ -270,6 +275,15 @@ class SettingsPreferencesTest {
         
         SettingsPreferences.setToolbarButtons(context, listOf("symbols"))
         assertEquals(listOf("symbols"), SettingsPreferences.getToolbarButtons(context))
+    }
+
+    @Test
+    fun pageSizeDefaultsToThirtyAndPersists() {
+        assertEquals(30, SettingsPreferences.getPageSize(context))
+
+        SettingsPreferences.setPageSize(context, 36)
+
+        assertEquals(36, SettingsPreferences.getPageSize(context))
     }
     
     @Test
@@ -284,6 +298,6 @@ class SettingsPreferencesTest {
         
         assertEquals("wubi86", SettingsPreferences.getCurrentSchema(context))
         assertEquals(0, SettingsPreferences.getDarkMode(context))
-        assertTrue(SettingsPreferences.isSoundEnabled(context))
+        assertFalse(SettingsPreferences.isSoundEnabled(context))
     }
 }

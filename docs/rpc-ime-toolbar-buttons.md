@@ -6,7 +6,7 @@
 
 - 设置保存在应用私有 `kime_settings` SharedPreferences 中，键名为 `toolbar_buttons`。
 - 值是逗号分隔的按钮 ID；顺序就是自定义按钮的显示顺序。
-- 默认值为空，因此默认不显示可选工具按钮。
+- 全新安装且尚未修改过设置时，默认顺序为 `emoji`、`edit`、`home`、`end`、`copy`、`paste`、`clipboard`。
 - 手机当前配置（RPC 查询结果）：`edit`、`home`、`end`、`copy`、`paste`、`clipboard`。
 - RPC 写入 SharedPreferences 后会持久保存，应用/进程重启后仍保留；清除应用数据或卸载应用会清除该设置。
 - 目前可用 ID：
@@ -48,7 +48,7 @@ print({"stored": buttons, "available_ids": available})
 '''
 ```
 
-若 `stored` 是空列表，表示没有配置任何可选按钮。该值与 `RpcUiController.getState()` 无关：`getState()` 读取的是进程内临时 UI 状态，不是这个持久化偏好。
+若 `stored` 是空列表，表示偏好中已保存空配置；新安装且尚未保存过此项时，`getToolbarButtons()` 会返回上面的默认顺序。该值与 `RpcUiController.getState()` 无关：`getState()` 读取的是进程内临时 UI 状态，不是这个持久化偏好。
 
 将上面的 `code` 变量传给本地 `client_mqtt.rpc(code, request_topic="设备 topic", ...)` 即可执行；本地 RPC 客户端调用不属于手机端代码。
 
