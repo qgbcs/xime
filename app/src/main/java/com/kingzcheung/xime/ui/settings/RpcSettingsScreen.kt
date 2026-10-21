@@ -34,16 +34,18 @@ import androidx.compose.ui.platform.LocalContext
 import com.kingzcheung.xime.settings.RpcSettings
 import com.kingzcheung.xime.settings.RpcSettingsStore
 import com.kingzcheung.xime.settings.SettingsPreferences
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RpcSettingsContent(onBack: () -> Unit) {
     val context = LocalContext.current
-    val configPath = remember {
-        runCatching { RpcSettingsStore.configFile().absolutePath }
+    val initialConfigPath = remember {
+        runCatching { RpcSettingsStore.configFile(context.filesDir).absolutePath }
             .getOrElse { "Python RPC 尚未启动，暂时无法读取配置路径" }
     }
-    val initial = remember { RpcSettingsStore.load() }
+    var configPath by remember { mutableStateOf(initialConfigPath) }
+    val initial = remember { RpcSettingsStore.load(context.filesDir) }
     var httpEnabled by remember { mutableStateOf(initial.httpEnabled) }
     var httpPort by remember { mutableStateOf(initial.httpPort.toString()) }
     var httpHost by remember { mutableStateOf(initial.httpHost) }
@@ -98,6 +100,12 @@ fun RpcSettingsContent(onBack: () -> Unit) {
                 { pubKey = it },
                 "输入框清空代表不使用公钥验签"
             )
+            RpcField(
+                "RPC 配置文件路径",
+                configPath,
+                { configPath = it },
+                "请输入绝对路径；新文件不存在时会复制当前配置"
+            )
 
             SettingsToggleItem(
                 title = "RPC 日志写磁盘",
@@ -118,6 +126,10 @@ fun RpcSettingsContent(onBack: () -> Unit) {
                     val port = httpPort.toIntOrNull()
                     message = if (port == null || port !in 1..65535) {
                         "HTTP 端口无效"
+                    } else if (
+                        configPath.isBlank() || !File(configPath.trim()).isAbsolute
+                    ) {
+                        "RPC 配置路径必须是非空绝对路径"
                     } else {
                         val saved = RpcSettingsStore.save(
                             RpcSettings(
@@ -129,9 +141,16 @@ fun RpcSettingsContent(onBack: () -> Unit) {
                                 mqttRequestTopic = requestTopic,
                                 mqttResponseTopic = responseTopic,
                                 mqttPubKey = pubKey
-                            )
+                            ),
+                            context.filesDir,
+                            configPath.trim()
                         )
-                        if (saved) "已保存，请点击设置页底部的重启应用使配置生效" else "保存失败，请检查存储权限"
+                        if (saved) {
+                            configPath = configPath.trim()
+                            "已保存，请点击设置页底部的重启应用使配置生效"
+                        } else {
+                            "保存失败，请检查配置路径是否可写，并查看运行日志"
+                        }
                     }
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -140,11 +159,6 @@ fun RpcSettingsContent(onBack: () -> Unit) {
                 Text("保存 RPC 配置")
             }
             message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-            Text(
-                "配置文件：$configPath",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }

@@ -3,7 +3,9 @@ import sys
 import traceback
 import threading
 import json
+import shutil
 import tempfile
+from pathlib import Path
 
 MAX_LOG_BYTES = 100 * 1024
 MAX_LOG_LINES = 1000
@@ -16,7 +18,7 @@ except Exception:  # pragma: no cover - chaquopy/python-only test environments m
 
 def load_rpc_config(config_path):
     defaults = {
-        "http_enabled": True,
+        "http_enabled": False,
         "http_port": 1144,
         "http_host": "0.0.0.0",
         "http_key": "",
@@ -38,15 +40,76 @@ def _ensure_multi_mqtt_path():
         sys.path.insert(0, submodule_root)
 
 
-def get_rpc_config_path():
+def get_rpc_config_path(files_dir=None):
     _ensure_multi_mqtt_path()
     import server_mqtt
+    _configure_rpc_config_path(server_mqtt, files_dir)
     return os.fspath(server_mqtt.RPC_CONFIG_PATH)
 
 
-def get_rpc_settings():
+def _configure_rpc_config_path(server_mqtt, files_dir, requested_path=None):
+    if not files_dir:
+        if requested_path is not None:
+            raise ValueError("保存 RPC 配置路径需要应用私有目录")
+        return
+
+    files_path = Path(files_dir)
+    path_state = files_path / "rpc_config_path.txt"
+    previous_path = Path(server_mqtt.RPC_CONFIG_PATH)
+    if requested_path is not None:
+        path_value = str(requested_path).strip()
+        if not path_value:
+            raise ValueError("RPC 配置路径不能为空")
+        config_path = Path(path_value)
+    elif path_state.is_file():
+        path_value = path_state.read_text(encoding="utf-8").strip()
+        if not path_value:
+            raise ValueError(f"RPC 配置路径记录为空: {path_state}")
+        config_path = Path(path_value)
+    else:
+        config_path = files_path / "rpc.json"
+
+    if not config_path.is_absolute():
+        raise ValueError("RPC 配置路径必须是绝对路径")
+    config_path = Path(os.path.abspath(os.fspath(config_path)))
+    if config_path == path_state:
+        raise ValueError("RPC 配置文件不能与路径记录文件相同")
+    if config_path.exists() and not config_path.is_file():
+        raise ValueError(f"RPC 配置路径不是文件: {config_path}")
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with server_mqtt._RPC_CONFIG_LOCK:
+        if (
+            config_path != previous_path
+            and not config_path.exists()
+            and previous_path.is_file()
+        ):
+            shutil.copy2(previous_path, config_path)
+
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".rpc-config-path.", suffix=".tmp", dir=files_path
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as path_file:
+                path_file.write(os.fspath(config_path))
+                path_file.write("\n")
+                path_file.flush()
+                os.fsync(path_file.fileno())
+            os.replace(temp_path, path_state)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+            raise
+
+        server_mqtt.RPC_CONFIG_PATH = config_path
+
+
+def get_rpc_settings(files_dir=None):
     _ensure_multi_mqtt_path()
     import server_mqtt
+    _configure_rpc_config_path(server_mqtt, files_dir)
 
     stored = server_mqtt._read_rpc_config_document()
     try:
@@ -61,10 +124,6 @@ def get_rpc_settings():
             server_mqtt._normalize_rpc_config(fallback_stored)
         )
     server = globals().get("mqtt_server")
-    mqtt_running = bool(
-        server is not None
-        and getattr(getattr(server, "mqtt_net", None), "clients", None)
-    )
     runtime_pub_key = getattr(
         getattr(server, "mqtt_net", None), "server_public_key_bytes", None
     )
@@ -73,15 +132,11 @@ def get_rpc_settings():
     if not isinstance(runtime_pub_key, str) or not runtime_pub_key:
         runtime_pub_key = effective["pub_key"] or ""
     settings = {
-        "http_enabled": True,
+        "http_enabled": False,
         "http_port": 1144,
         "http_host": "0.0.0.0",
         "http_key": "",
-        "mqtt_enabled": (
-            mqtt_running
-            if "mqtt_server" in globals()
-            else bool(stored.get("mqtt_enabled", True))
-        ),
+        "mqtt_enabled": bool(stored.get("mqtt_enabled", True)),
         "request_topic": effective["request_topic"],
         "mqtt_reply_topic": getattr(
             server, "reply_topic", server_mqtt.DEFAULT_REPLY_TOPIC
@@ -102,11 +157,15 @@ def get_rpc_settings():
     settings["request_topic"] = (
         stored.get("request_topic") or effective["request_topic"]
     )
-    settings["pub_key"] = stored.get("pub_key") or runtime_pub_key
+    settings["pub_key"] = (
+        (stored.get("pub_key") or "")
+        if "pub_key" in stored
+        else runtime_pub_key
+    )
     return json.dumps(settings, ensure_ascii=False)
 
 
-def save_rpc_settings(settings_json):
+def save_rpc_settings(settings_json, files_dir=None, config_path=None):
     settings = json.loads(settings_json)
     if not isinstance(settings, dict):
         raise TypeError("RPC 设置必须是 JSON object")
@@ -116,12 +175,18 @@ def save_rpc_settings(settings_json):
 
     _ensure_multi_mqtt_path()
     import server_mqtt
+    _configure_rpc_config_path(server_mqtt, files_dir, config_path)
 
     mqtt_updates = {}
     if settings.get("request_topic"):
         mqtt_updates["request_topic"] = settings["request_topic"]
-    if settings.get("pub_key"):
-        mqtt_updates["pub_key"] = settings["pub_key"]
+    if "pub_key" in settings:
+        pub_key = settings["pub_key"]
+        if pub_key is not None and not isinstance(pub_key, str):
+            raise ValueError("MQTT 公钥必须是字符串或 null")
+        mqtt_updates["pub_key"] = (
+            pub_key.strip() if pub_key is not None else None
+        )
     if mqtt_updates:
         server_mqtt._write_rpc_config_updates(mqtt_updates)
 
@@ -248,7 +313,7 @@ def start(log_path, files_dir=None):
 
     sys.stdout = Tee(sys.__stdout__, sinks)
     sys.stderr = Tee(sys.__stderr__, sinks)
-    print("[PYTHON] Chaquopy RPC bootstrap started")
+    print("Chaquopy started")
     try:
         import runtime_pip
         runtime_pip.configure(files_dir)
@@ -257,6 +322,7 @@ def start(log_path, files_dir=None):
         import logging
         _ensure_multi_mqtt_path()
         import server_http,server_mqtt
+        _configure_rpc_config_path(server_mqtt, files_dir)
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -266,7 +332,7 @@ def start(log_path, files_dir=None):
         mqtt_config = server_mqtt.load_rpc_config()
         mqtt_server = None
         gms = None
-        if config.get('http_enabled', True):
+        if config.get('http_enabled', False):
             http_server= server_http.start_rpc_server(
                 port=int(config.get('http_port', 1144)),
                 ip=str(config.get('http_host', '0.0.0.0')),
