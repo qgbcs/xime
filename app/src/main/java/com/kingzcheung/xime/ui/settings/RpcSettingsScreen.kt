@@ -39,7 +39,11 @@ import com.kingzcheung.xime.settings.SettingsPreferences
 @Composable
 fun RpcSettingsContent(onBack: () -> Unit) {
     val context = LocalContext.current
-    val initial = remember { RpcSettingsStore.load(context) }
+    val configPath = remember {
+        runCatching { RpcSettingsStore.configFile().absolutePath }
+            .getOrElse { "Python RPC 尚未启动，暂时无法读取配置路径" }
+    }
+    val initial = remember { RpcSettingsStore.load() }
     var httpEnabled by remember { mutableStateOf(initial.httpEnabled) }
     var httpPort by remember { mutableStateOf(initial.httpPort.toString()) }
     var httpHost by remember { mutableStateOf(initial.httpHost) }
@@ -47,7 +51,7 @@ fun RpcSettingsContent(onBack: () -> Unit) {
     var mqttEnabled by remember { mutableStateOf(initial.mqttEnabled) }
     var requestTopic by remember { mutableStateOf(initial.mqttRequestTopic) }
     var responseTopic by remember { mutableStateOf(initial.mqttResponseTopic) }
-    var pubKey by remember { mutableStateOf(initial.mqttPubKey) }
+    var pubKey by remember { mutableStateOf(initial.mqttPubKey.orEmpty()) }
     var message by remember { mutableStateOf<String?>(null) }
     var rpcLogToDisk by remember { mutableStateOf(SettingsPreferences.isRpcLogToDiskEnabled(context)) }
 
@@ -137,7 +141,7 @@ fun RpcSettingsContent(onBack: () -> Unit) {
             }
             message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
             Text(
-                "配置文件：${RpcSettingsStore.CONFIG_PATH}",
+                "配置文件：$configPath",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

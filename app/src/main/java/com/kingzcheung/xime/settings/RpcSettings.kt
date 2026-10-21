@@ -1,7 +1,7 @@
 package com.kingzcheung.xime.settings
 
-import android.content.Context
 import android.util.Log
+import com.chaquo.python.Python
 import java.io.File
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -19,29 +19,34 @@ data class RpcSettings(
     val httpKey: String = "",
     @SerialName("mqtt_enabled")
     val mqttEnabled: Boolean = false,
-    @SerialName("mqtt_request_topic")
+    @SerialName("request_topic")
     val mqttRequestTopic: String = "sys/device/request",
     @SerialName("mqtt_reply_topic")
     val mqttResponseTopic: String = "sys/device/response",
-    @SerialName("mqtt_pub_key")
-    val mqttPubKey: String = ""
+    @SerialName("pub_key")
+    val mqttPubKey: String? = ""
 )
 
 object RpcSettingsStore {
-    const val CONFIG_PATH = "/sdcard/Alarms/xime_rpc.json"
     private const val TAG = "RpcSettingsStore"
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
 
-    fun load(context: Context): RpcSettings {
+    fun configFile(): File {
+        check(Python.isStarted()) { "Python RPC is not started" }
+        val path = Python.getInstance()
+            .getModule("app")
+            .callAttr("get_rpc_config_path")
+            .toString()
+        return File(path)
+    }
+
+    fun load(): RpcSettings {
         return try {
-            val externalFile = File(CONFIG_PATH)
-            if (externalFile.exists()) {
-                json.decodeFromString<RpcSettings>(externalFile.readText())
-            } else {
-                context.assets.open("xime_rpc.json").bufferedReader().use {
-                    json.decodeFromString<RpcSettings>(it.readText())
-                }
-            }
+            val settings = Python.getInstance()
+                .getModule("app")
+                .callAttr("get_rpc_settings")
+                .toString()
+            json.decodeFromString<RpcSettings>(settings)
         } catch (error: Exception) {
             Log.w(TAG, "Unable to load RPC settings", error)
             RpcSettings()
@@ -50,10 +55,11 @@ object RpcSettingsStore {
 
     fun save(settings: RpcSettings): Boolean {
         return try {
-            val file = File(CONFIG_PATH)
-            file.parentFile?.mkdirs()
-            file.writeText(json.encodeToString(settings))
-            true
+            Python.getInstance()
+                .getModule("app")
+                .callAttr("save_rpc_settings", json.encodeToString(settings))
+                .toString()
+                .toBoolean()
         } catch (error: Exception) {
             Log.e(TAG, "Unable to save RPC settings", error)
             false

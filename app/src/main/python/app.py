@@ -3,10 +3,10 @@ import sys
 import traceback
 import threading
 import json
+import tempfile
 
 MAX_LOG_BYTES = 100 * 1024
 MAX_LOG_LINES = 1000
-RPC_CONFIG_PATH = "/sdcard/Alarms/xime_rpc.json"
 
 try:
     from java import jclass
@@ -14,26 +14,150 @@ try:
 except Exception:  # pragma: no cover - chaquopy/python-only test environments may not expose Java.
     RpcUiController = None
 
-def load_rpc_config():
+def load_rpc_config(config_path):
     defaults = {
         "http_enabled": True,
         "http_port": 1144,
         "http_host": "0.0.0.0",
         "http_key": "",
-        "mqtt_enabled": False,
-        #"mqtt_brokers": "broker.emqx.io:1883",
-        "mqtt_request_topic": "sys/device/request",
-        "mqtt_reply_topic": "sys/device/response",
-        "mqtt_pub_key": "",
+        "mqtt_enabled": True,
     }
     try:
-        with open(RPC_CONFIG_PATH, "r", encoding="utf-8") as config_file:
+        with open(config_path, "r", encoding="utf-8") as config_file:
             values = json.load(config_file)
         if isinstance(values, dict):
             defaults.update(values)
     except (OSError, ValueError):
         pass
     return defaults
+
+
+def _ensure_multi_mqtt_path():
+    submodule_root = os.path.join(os.path.dirname(__file__), "multi_mqtt")
+    if submodule_root not in sys.path:
+        sys.path.insert(0, submodule_root)
+
+
+def get_rpc_config_path():
+    _ensure_multi_mqtt_path()
+    import server_mqtt
+    return os.fspath(server_mqtt.RPC_CONFIG_PATH)
+
+
+def get_rpc_settings():
+    _ensure_multi_mqtt_path()
+    import server_mqtt
+
+    stored = server_mqtt._read_rpc_config_document()
+    try:
+        effective = server_mqtt.rpc_config_get()
+    except ValueError:
+        fallback_stored = dict(stored)
+        if not fallback_stored.get("request_topic"):
+            fallback_stored.pop("request_topic", None)
+        if not fallback_stored.get("pub_key"):
+            fallback_stored.pop("pub_key", None)
+        effective = server_mqtt._json_rpc_config(
+            server_mqtt._normalize_rpc_config(fallback_stored)
+        )
+    server = globals().get("mqtt_server")
+    mqtt_running = bool(
+        server is not None
+        and getattr(getattr(server, "mqtt_net", None), "clients", None)
+    )
+    runtime_pub_key = getattr(
+        getattr(server, "mqtt_net", None), "server_public_key_bytes", None
+    )
+    if isinstance(runtime_pub_key, bytes):
+        runtime_pub_key = runtime_pub_key.decode("utf-8", errors="replace")
+    if not isinstance(runtime_pub_key, str) or not runtime_pub_key:
+        runtime_pub_key = effective["pub_key"] or ""
+    settings = {
+        "http_enabled": True,
+        "http_port": 1144,
+        "http_host": "0.0.0.0",
+        "http_key": "",
+        "mqtt_enabled": (
+            mqtt_running
+            if "mqtt_server" in globals()
+            else bool(stored.get("mqtt_enabled", True))
+        ),
+        "request_topic": effective["request_topic"],
+        "mqtt_reply_topic": getattr(
+            server, "reply_topic", server_mqtt.DEFAULT_REPLY_TOPIC
+        ),
+        "pub_key": runtime_pub_key,
+    }
+    settings.update({
+        key: stored[key]
+        for key in (
+            "http_enabled",
+            "http_port",
+            "http_host",
+            "http_key",
+            "mqtt_reply_topic",
+        )
+        if key in stored
+    })
+    settings["request_topic"] = (
+        stored.get("request_topic") or effective["request_topic"]
+    )
+    settings["pub_key"] = stored.get("pub_key") or runtime_pub_key
+    return json.dumps(settings, ensure_ascii=False)
+
+
+def save_rpc_settings(settings_json):
+    settings = json.loads(settings_json)
+    if not isinstance(settings, dict):
+        raise TypeError("RPC 设置必须是 JSON object")
+    port = settings.get("http_port", 1144)
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("HTTP 端口必须在 1 到 65535 之间")
+
+    _ensure_multi_mqtt_path()
+    import server_mqtt
+
+    mqtt_updates = {}
+    if settings.get("request_topic"):
+        mqtt_updates["request_topic"] = settings["request_topic"]
+    if settings.get("pub_key"):
+        mqtt_updates["pub_key"] = settings["pub_key"]
+    if mqtt_updates:
+        server_mqtt._write_rpc_config_updates(mqtt_updates)
+
+    path = server_mqtt.RPC_CONFIG_PATH
+    path = os.fspath(path)
+    with server_mqtt._RPC_CONFIG_LOCK:
+        stored = server_mqtt._read_rpc_config_document()
+        for key in (
+            "http_enabled",
+            "http_port",
+            "http_host",
+            "http_key",
+            "mqtt_enabled",
+            "mqtt_reply_topic",
+        ):
+            if key in settings:
+                stored[key] = settings[key]
+
+        parent = os.path.dirname(path) or "."
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".rpc-settings.", suffix=".json", dir=parent
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as config_file:
+                json.dump(stored, config_file, ensure_ascii=False, indent=2)
+                config_file.write("\n")
+                config_file.flush()
+                os.fsync(config_file.fileno())
+            os.replace(temp_path, path)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+            raise
+    return True
 
 
 class LimitedLogFile:
@@ -131,17 +255,17 @@ def start(log_path, files_dir=None):
         # Import after stdout/stderr redirection so logging.basicConfig in the
         # MQTT and HTTP modules writes into the same log shown by the settings UI.
         import logging
-        submodule_root = os.path.join(os.path.dirname(__file__), "multi_mqtt")
-        if submodule_root not in sys.path:
-            sys.path.insert(0, submodule_root)
+        _ensure_multi_mqtt_path()
         import server_http,server_mqtt
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             force=True,
         )
-        config = load_rpc_config()
-        mqtt_server =  None
+        config = load_rpc_config(server_mqtt.RPC_CONFIG_PATH)
+        mqtt_config = server_mqtt.load_rpc_config()
+        mqtt_server = None
+        gms = None
         if config.get('http_enabled', True):
             http_server= server_http.start_rpc_server(
                 port=int(config.get('http_port', 1144)),
@@ -153,19 +277,15 @@ def start(log_path, files_dir=None):
         else:
             http_server = None
             
-        # mqtt_server = server_mqtt.start(config,globals=globals()) if config.get("mqtt_enabled", False) else None
-        request_topic = str(config.get("mqtt_request_topic") or server_mqtt.REQUEST_TOPIC)
-        reply_topic = str(config.get("mqtt_reply_topic") or server_mqtt.DEFAULT_REPLY_TOPIC)
-
-        # 直接把原始值交给 MultiMQTTManager，由它统一走 get_standard_public_pem_bytes
-        mqtt_server=server_mqtt.MQTTServer(
-            server_public_key_bytes=config.get("mqtt_pub_key"),
-            request_topic=request_topic,
-            reply_topic=reply_topic,
-            globals=globals(),
-        )
-        gms = mqtt_server  # 别名：与 multi_mqtt 约定一致，RPC/设置页按钮统一用 gms.mqtt_net.stats.get_report()
-        mqtt_server.start(block=False)
+        if config.get("mqtt_enabled", True):
+            reply_topic = str(config.get("mqtt_reply_topic") or server_mqtt.DEFAULT_REPLY_TOPIC)
+            mqtt_server = server_mqtt.MQTTServer(
+                server_public_key_bytes=mqtt_config["pub_key"],
+                reply_topic=reply_topic,
+                globals=globals(),
+            )
+            gms = mqtt_server  # 设置页统计按钮使用此 MQTT 服务实例
+            mqtt_server.start(block=False)
 
         import task_manager
         task_manager.init(files_dir or ".")
