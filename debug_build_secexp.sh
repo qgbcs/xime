@@ -266,29 +266,6 @@ OUT_APK="$OUT_DIR/${APK_BASENAME}-${VERSION_CODE}-${BUILD_ABIS}.apk"
 cp -f "$SIGNED_APK" "$OUT_APK"
 rm -f "$SIGNED_APK" "$APK_PATH"
 
-APKSIGNER_BIN="$(find "$ANDROID_HOME_DEFAULT/build-tools" -type f -name apksigner -print 2>/dev/null | sort | tail -n 1)"
-AAPT_BIN="$(find "$ANDROID_HOME_DEFAULT/build-tools" -type f -name aapt -print 2>/dev/null | sort | tail -n 1)"
-if [[ -z "$APKSIGNER_BIN" || ! -x "$APKSIGNER_BIN" ]]; then
-    echo "错误: 未找到可执行的 apksigner，SDK 路径: $ANDROID_HOME_DEFAULT" >&2
-    exit 1
-fi
-if [[ -z "$AAPT_BIN" || ! -x "$AAPT_BIN" ]]; then
-    echo "错误: 未找到可执行的 aapt，SDK 路径: $ANDROID_HOME_DEFAULT" >&2
-    exit 1
-fi
-
-echo
-echo "=== 已生成 APK ==="
-ls -l "$OUT_APK"
-
-echo
-echo "=== apksigner verify --print-certs ==="
-"$APKSIGNER_BIN" verify --print-certs "$OUT_APK" 2>&1 | sed -n '1,40p'
-
-echo
-echo "=== aapt badging ==="
-"$AAPT_BIN" dump badging "$OUT_APK" | grep -E 'package:|versionCode|versionName' || true
-
 echo
 echo "SECEXP=$SECEXP"
 echo "APK=$OUT_APK"
