@@ -234,6 +234,21 @@ PY
 rm -f "$APK_PATH"
 APK_PATH="$REPACKED_APK"
 
+# 5b) zipalign：上面的 Python 重打包只保留压缩方式、不保证对齐，
+#     Android 11+（targetSdk>=30）要求 resources.arsc 等 STORED 条目 4 字节对齐，
+#     否则安装会失败（如 -124 Failed parse during installPackageLI）。
+#     zipalign 会改字节，必须在 apk_sign.py 签名之前执行；输入输出固定，仍可复现。
+ZIPALIGN_BIN="$(find "$ANDROID_HOME_DEFAULT/build-tools" -maxdepth 2 -type f -name zipalign -print 2>/dev/null | sort -V | tail -n 1)"
+if [[ -z "$ZIPALIGN_BIN" || ! -x "$ZIPALIGN_BIN" ]]; then
+    echo "错误: 未找到可执行的 zipalign，SDK 路径: $ANDROID_HOME_DEFAULT" >&2
+    exit 1
+fi
+ALIGNED_APK="$PROJECT_DIR/app/build/outputs/apk/debug/aligned-${VERSION_CODE}-${BUILD_ABIS}.apk"
+"$ZIPALIGN_BIN" -f -p 4 "$APK_PATH" "$ALIGNED_APK"
+rm -f "$APK_PATH"
+APK_PATH="$ALIGNED_APK"
+"$ZIPALIGN_BIN" -c -p 4 "$APK_PATH"
+
 # 6) 使用 apk_sign.py 通过 secexp 确定性生成签名密钥并签名
 python3 "$PROJECT_DIR/apk_sign.py" "$APK_PATH" \
   --mode secexp \
