@@ -144,10 +144,12 @@ if [[ -d "$source_dir" ]]; then
     mkdir -p "$target_dir"
     # 清掉目标里可能残留的 .git（旧的 submodule 痕迹），否则它还是个 git 仓库
     rm -rf "$target_dir/.git"
-    rsync --delete \
+    rsync --delete-excluded \
           --include='/*.py' --exclude='*' \
           -a "$source_dir/" "$target_dir/" \
         || echo "警告: rsync 返回非零，忽略并继续构建。" >&2
+    # 强制清理：同步后只保留根级 .py，删除子目录和其他文件
+    find "$target_dir" -mindepth 1 -maxdepth 1 ! -name "*.py" -exec rm -rf -- {} +
 else
     echo "警告: 同步源目录不存在: $source_dir，跳过 rsync。" >&2
 fi
