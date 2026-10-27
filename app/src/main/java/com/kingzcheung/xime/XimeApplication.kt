@@ -67,6 +67,8 @@ class XimeApplication : Application(), ImageLoaderFactory {
         if (isMainProcess()) {
             // 网络边沿事件监听：先于 Python 启动注册，Python 未就绪期间事件自动排队补投
             com.kingzcheung.xime.task.NetworkEventMonitor.start(this)
+            // 系统广播监听：默认只进 Kotlin 环形缓冲，仅订阅的事件才进入 Python
+            com.kingzcheung.xime.task.SystemEventMonitor.start(this)
             // 最早期：外置设置镜像恢复（外置为准），必须在任何业务读取 kime_settings 之前
             com.kingzcheung.xime.storage.SettingsMirror.reconcile(this)
             startPythonRpc()

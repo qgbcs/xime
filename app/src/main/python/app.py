@@ -316,11 +316,13 @@ def start(log_path, files_dir=None):
     print("Chaquopy started")
     try:
         import runtime_pip
+        # 先加 multi_mqtt，再 configure：把 filesDir/site-packages 顶到 sys.path[0]，
+        # 保证“放入 site-packages 的同名模块”优先于 APK assets 与 multi_mqtt。
+        _ensure_multi_mqtt_path()
         runtime_pip.configure(files_dir)
         # Import after stdout/stderr redirection so logging.basicConfig in the
         # MQTT and HTTP modules writes into the same log shown by the settings UI.
         import logging
-        _ensure_multi_mqtt_path()
         import server_http,server_mqtt
         _configure_rpc_config_path(server_mqtt, files_dir)
         logging.basicConfig(
@@ -361,6 +363,48 @@ def start(log_path, files_dir=None):
     except Exception:
         traceback.print_exc()
         return False
+
+
+def reload_module(name, files_dir=None):
+    """按 sys.path 优先级重新导入模块，实现“放入 site-packages 即热更新”。
+
+    RPC 用法：
+      import app; app.reload_module("task_manager")
+
+    先把 filesDir/site-packages 顶到 sys.path[0]，删除 sys.modules 中的旧
+    模块后重新 import；task_manager 还会重新 init 恢复任务调度。
+    """
+    import importlib
+    try:
+        import runtime_pip
+        base = files_dir or runtime_pip.FILES_DIR
+    except Exception:
+        base = files_dir
+    if not base:
+        return {"ok": False, "error": "files_dir 未知"}
+    override = os.path.join(base, "site-packages")
+    target = os.path.join(override, name.replace(".", os.sep) + ".py")
+    pkg = os.path.join(override, *name.split("."))
+    if not (os.path.isfile(target) or os.path.isdir(pkg)):
+        return {"ok": False, "error": "site-packages 中没有该模块",
+                "path": target}
+    if not sys.path or sys.path[0] != override:
+        while override in sys.path:
+            sys.path.remove(override)
+        sys.path.insert(0, override)
+        sys.path_importer_cache.pop(override, None)
+    old = sys.modules.pop(name, None)
+    try:
+        mod = importlib.import_module(name)
+    except Exception:
+        if old is not None:
+            sys.modules[name] = old
+        return {"ok": False, "error": traceback.format_exc(limit=3)}
+    if name == "task_manager":
+        mod.init(base)
+    return {"ok": True, "module": name,
+            "file": getattr(mod, "__file__", None),
+            "override": target if os.path.isfile(target) else pkg}
 
 
 def mqtt_stats_report():

@@ -25,6 +25,7 @@ Python 负责任务注册表、状态持久化、执行统计与接力下一次�
   wifi_disconnected  默认网络离开 WiFi
   network_online     默认网络通过 NET_CAPABILITY_VALIDATED 校验
   network_offline    默认网络丢失/失效
+  screen_on/screen_off 等  系统广播（Kotlin SystemEventMonitor，默认只记账不进 Python）
 
 RPC 示例：
   r=task_manager.add_daily_task("dailytest", "08:30",
@@ -34,6 +35,7 @@ RPC 示例：
   r=task_manager.test_event("wifi_connected", {"wifi": True})   # 本地模拟
   r=task_manager.list_tasks()
   r=task_manager.recent_events()
+  r=task_manager.system_events(100, True)   # 多行文本，每行一个事件（本地时间格式化）
 """
 import io
 import json
@@ -66,6 +68,34 @@ EVENTS = (
     "wifi_disconnected",
     "network_online",
     "network_offline",
+    # 以下由 Kotlin SystemEventMonitor 动态注册的系统广播产生
+    "screen_on",
+    "screen_off",
+    "user_present",
+    "battery_low",
+    "battery_okay",
+    "battery_changed",
+    "power_connected",
+    "power_disconnected",
+    "airplane_mode_changed",
+    "headset_plug",
+    "package_added",
+    "package_removed",
+    "package_replaced",
+    "wifi_state_changed",
+    "connectivity_changed",
+    "ringer_mode_changed",
+    "bluetooth_state_changed",
+    "media_mounted",
+    "media_unmounted",
+    "media_removed",
+    "media_bad_removal",
+    "media_eject",
+    "shutdown",
+    "locale_changed",
+    "time_changed",
+    "timezone_changed",
+    "input_method_changed",
 )
 
 # ---- 任务函数注册表：name -> callable() -> object（少量内置示例函数） ----
@@ -118,6 +148,7 @@ def init(files_dir):
                 daily_n += 1
             else:
                 event_n += 1
+    _sync_system_events()
     _ensure_event_worker()
     consume_boot_pending()
     print(f"[task_manager] init done, {len(_STATE['tasks'])} tasks, "
@@ -155,6 +186,31 @@ def _schedule(task_id, delay_seconds):
     except Exception:
         print("[task_manager] TaskScheduler 调度失败:\n" + traceback.format_exc(limit=2))
         return False
+
+
+# ============================ 系统广播（Kotlin SystemEventMonitor） ============================
+
+_SYSTEM_MONITOR = "com.kingzcheung.xime.task.SystemEventMonitor"
+
+
+def _sync_system_events():
+    """把当前启用的事件任务的事件名集合同步给 Kotlin SystemEventMonitor。
+
+    Kotlin 只对集合内的事件调用 fire_event；未订阅的系统广播仅写入 Kotlin
+    环形缓冲，不产生任何 Chaquopy/Python 调用，避免无谓耗电。
+    """
+    if _jclass is None:
+        return
+    with _LOCK:
+        names = sorted({
+            str(t.get("event")) for t in _STATE["tasks"].values()
+            if _kind(t) == "event" and t.get("enabled", True) and t.get("event")
+        })
+    try:
+        _jclass(_SYSTEM_MONITOR).syncRegisteredEvents(json.dumps(names))
+        print(f"[task_manager] 系统事件订阅同步: {names}")
+    except Exception:
+        print("[task_manager] 系统事件订阅同步失败:\n" + traceback.format_exc(limit=2))
 
 
 # ============================ RPC：任务生命周期 ============================
@@ -212,6 +268,7 @@ def add_event_task(task_id, event, code=None, func_name=None,
             "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         _save()
+    _sync_system_events()
     print(f"[task_manager] add event {task_id} on={event} debounce={debounce}s "
           f"enabled={enabled}")
     return {"ok": True, "id": task_id, "kind": "event", "event": event}
@@ -282,6 +339,8 @@ def remove_task(task_id):
             _jclass("com.kingzcheung.xime.task.TaskScheduler").cancel(task_id)
         except Exception:
             pass
+    if existed:
+        _sync_system_events()
     return {"ok": existed}
 
 
@@ -298,6 +357,7 @@ def pause_task(task_id):
             _jclass("com.kingzcheung.xime.task.TaskScheduler").cancel(task_id)
         except Exception:
             pass
+    _sync_system_events()
     return {"ok": True}
 
 
@@ -314,6 +374,7 @@ def resume_task(task_id):
             delay = _daily_delay(t)
         event = t.get("event")
         _save()
+    _sync_system_events()
     if kind in ("interval", "daily"):
         _schedule(task_id, delay)
     return {"ok": True, "kind": kind, "event": event}
@@ -347,6 +408,83 @@ def recent_events(limit=20):
     """最近发生的事件环形缓冲，供 RPC 校验事件链路。"""
     with _LOCK:
         return list(_RECENT_EVENTS[-max(1, int(limit)):])
+
+
+def _fmt_epoch_ms(ms):
+    """epoch 毫秒 -> 本地时间 'YYYY-MM-DD HH:MM:SS.mmm'；None 返回 '-'。"""
+    if ms is None:
+        return "-"
+    sec, milli = divmod(int(ms), 1000)
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(sec)) + ".%03d" % milli
+
+
+def system_events(limit=50, return_str=False):
+    """读取 Kotlin SystemEventMonitor 的系统广播缓冲。
+
+    每行格式 ``epoch_ms | event_name | payload_json``；默认返回结构化字典。
+    :param return_str: True 时直接返回多行文本，每行一个事件，时间为
+                       ``YYYY-MM-DD HH:MM:SS.mmm``（本地时区）。
+    limit<=0 表示取全部（上限 500）。
+    """
+    if _jclass is None:
+        return "非 Android 环境" if return_str else {"ok": False, "error": "非 Android 环境"}
+    try:
+        raw = _jclass(_SYSTEM_MONITOR).getEventLog(int(limit))
+        registered = _jclass(_SYSTEM_MONITOR).getRegisteredEvents()
+    except Exception:
+        err = traceback.format_exc(limit=2)
+        return err if return_str else {"ok": False, "error": err}
+    try:
+        lines = json.loads(raw) if raw else []
+    except ValueError:
+        lines = []
+    events = []
+    for line in lines:
+        parts = str(line).split(" | ", 2)
+        try:
+            ts = int(parts[0]) if parts and parts[0].isdigit() else None
+        except (ValueError, IndexError):
+            ts = None
+        item = {"ts_ms": ts,
+                "time": _fmt_epoch_ms(ts),
+                "event": parts[1] if len(parts) > 1 else "",
+                "payload": {}}
+        if len(parts) > 2:
+            try:
+                item["payload"] = json.loads(parts[2])
+            except ValueError:
+                item["payload"] = {"raw": parts[2]}
+        events.append(item)
+    if return_str:
+        # 文本模式：时间为可读本地时间，事件名左对齐到固定列宽，payload 去掉
+        # 与行前两列重复的 ts（毫秒时间戳）和 action（Intent action）。
+        out = []
+        for e in events:
+            payload = dict(e["payload"])
+            payload.pop("ts", None)
+            payload.pop("action", None)
+            line = "%s | %-24s" % (e["time"], e["event"])
+            if payload:
+                line += " | " + json.dumps(payload, ensure_ascii=False)
+            out.append(line)
+        return "\n".join(out)
+    try:
+        registered_names = json.loads(registered) if registered else []
+    except ValueError:
+        registered_names = []
+    return {"ok": True, "count": len(events),
+            "registered": registered_names, "events": events}
+
+
+def clear_system_events():
+    """清空 Kotlin 侧系统广播缓冲。"""
+    if _jclass is None:
+        return {"ok": False, "error": "非 Android 环境"}
+    try:
+        _jclass(_SYSTEM_MONITOR).clearEventLog()
+        return {"ok": True}
+    except Exception:
+        return {"ok": False, "error": traceback.format_exc(limit=2)}
 
 
 def test_event(event, payload=None):
