@@ -407,6 +407,198 @@ def reload_module(name, files_dir=None):
             "override": target if os.path.isfile(target) else pkg}
 
 
+def _py_fmt_ms(ms):
+    """epoch 毫秒 -> 本地时间 'YYYY-MM-DD HH:MM:SS.mmm'；空值返回 None。"""
+    if not ms:
+        return None
+    import time
+    sec, milli = divmod(int(ms), 1000)
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(sec)) + ".%03d" % milli
+
+
+def _py_file_stats(path, max_bytes=16 * 1024 * 1024):
+    """单文件的大小/时间/sha256；超过 max_bytes 时退化为元信息 hash。"""
+    import hashlib
+    try:
+        st = os.stat(path)
+        if st.st_size > max_bytes:
+            meta = "%s|%d|%d" % (path, st.st_size, int(st.st_mtime))
+            return {"bytes": st.st_size,
+                    "time": _py_fmt_ms(int(st.st_mtime * 1000)),
+                    "sha256": "meta:" + hashlib.sha256(meta.encode()).hexdigest()}
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return {"bytes": st.st_size,
+                "time": _py_fmt_ms(int(st.st_mtime * 1000)),
+                "sha256": h.hexdigest()}
+    except OSError:
+        return {"error": "unreadable"}
+
+
+def _py_tree_stats(path, max_bytes=16 * 1024 * 1024, max_files=5000):
+    """目录递归统计：文件数/总字节/最新时间/内容 sha256（超限退化为元信息 hash）。"""
+    import hashlib
+    entries = []
+    for root, dirs, names in os.walk(path):
+        dirs.sort()
+        for name in sorted(names):
+            full = os.path.join(root, name)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            entries.append((os.path.relpath(full, path), full, st.st_size, st.st_mtime))
+    entries.sort()
+    total = sum(e[2] for e in entries)
+    newest = max([e[3] for e in entries] or [0])
+    h = hashlib.sha256()
+    for rel, full, size, mtime in entries:
+        h.update(("%s|%d|%d\n" % (rel, size, int(mtime))).encode("utf-8", "replace"))
+    if len(entries) <= max_files and total <= max_bytes:
+        for rel, full, size, mtime in entries:
+            try:
+                with open(full, "rb") as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b""):
+                        h.update(chunk)
+            except OSError:
+                pass
+        digest = h.hexdigest()
+    else:
+        digest = "meta:" + h.hexdigest()
+    return {"files": len(entries), "bytes": total,
+            "time": _py_fmt_ms(int(newest * 1000)) if newest else None,
+            "sha256": digest}
+
+
+def _py_builtin_summary():
+    """汇总 APK 内置 Python 模块：读 assets/chaquopy/app.imy 里的 pyc。
+
+    返回模块数量、总大小、APK 修改时间与整包 sha256，并附每个模块的
+
+    字节数与 CRC32（无需解压运行）。
+
+    """
+    import io
+    import zipfile
+    import hashlib
+    from java import jclass
+    src = str(jclass("com.chaquo.python.Python")
+              .getPlatform().getApplication().getApplicationInfo().sourceDir)
+    with zipfile.ZipFile(src) as apk:
+        data = apk.read("assets/chaquopy/app.imy")
+    modules = []
+    with zipfile.ZipFile(io.BytesIO(data)) as imy:
+        for item in imy.infolist():
+            if item.is_dir() or not item.filename.endswith(".pyc"):
+                continue
+            modules.append({"name": item.filename[:-4].replace("/", "."),
+                            "bytes": item.file_size,
+                            "crc32": "%08x" % item.CRC})
+    modules.sort(key=lambda m: m["name"])
+    try:
+        apk_mtime = int(os.path.getmtime(src) * 1000)
+    except OSError:
+        apk_mtime = None
+    return {"count": len(modules), "bytes": len(data),
+            "time": _py_fmt_ms(apk_mtime),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "modules": modules}
+
+
+def _py_site_packages(files_dir):
+    """filesDir/site-packages 顶层每个包/模块的 版本/大小/时间/hash。"""
+    sp = os.path.join(files_dir, "site-packages")
+    result = {"path": sp, "exists": os.path.isdir(sp), "entries": []}
+    if not result["exists"]:
+        return result
+    try:
+        names = sorted(os.listdir(sp))
+    except OSError:
+        return result
+    versions = {}
+    for name in names:
+        if not name.endswith(".dist-info"):
+            continue
+        base = name[:-len(".dist-info")]
+        project = dist_version = None
+        try:
+            with open(os.path.join(sp, name, "METADATA"),
+                      encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.startswith("Name: "):
+                        project = line[6:].strip()
+                    elif line.startswith("Version: "):
+                        dist_version = line[9:].strip()
+                    elif not line.strip():
+                        break
+        except OSError:
+            pass
+        if project:
+            versions[project.lower()] = dist_version
+        if "-" in base:
+            guess, ver = base.rsplit("-", 1)
+            versions.setdefault(guess.lower(), ver or dist_version)
+    for name in names:
+        if name == "__pycache__" or name.endswith(".dist-info"):
+            continue
+        full = os.path.join(sp, name)
+        if os.path.isdir(full):
+            stats = _py_tree_stats(full)
+            kind = "package"
+        else:
+            stats = _py_file_stats(full)
+            kind = "module"
+        if "error" in stats:
+            stats = {"bytes": None, "time": None, "sha256": None}
+        result["entries"].append({
+            "name": name, "kind": kind,
+            "version": versions.get(name.lower()),
+            "bytes": stats["bytes"], "time": stats["time"],
+            "sha256": stats["sha256"],
+        })
+    return result
+
+
+def build_extra():
+    """供 Kotlin RpcUiController.buildInfo() 合并的 Python 侧信息。
+
+
+    含内置 py 模块汇总与 filesDir/site-packages 各包的版本/大小/时间/hash。
+
+    返回 JSON 字符串；任何异常只写入返回值，绝不抛出，避免拖垮 buildInfo。
+
+    """
+    try:
+        import runtime_pip
+        files_dir = runtime_pip.FILES_DIR
+    except Exception:
+        files_dir = None
+    if not files_dir:
+        try:
+            from java import jclass
+            files_dir = str(jclass("com.chaquo.python.Python")
+                            .getPlatform().getApplication()
+                            .getFilesDir().toString())
+        except Exception:
+            files_dir = None
+    pymod = {}
+    try:
+        pymod["builtin"] = _py_builtin_summary()
+    except Exception:
+        pymod["builtin"] = {"error": traceback.format_exc(limit=2)}
+    try:
+        pymod["site_packages"] = (_py_site_packages(files_dir) if files_dir
+                                   else {"exists": False, "entries": []})
+    except Exception:
+        pymod["site_packages"] = {"error": traceback.format_exc(limit=2)}
+    try:
+        return json.dumps({"python": pymod}, ensure_ascii=False)
+    except Exception:
+        return "{}"
+
+
 def mqtt_stats_report():
     """设置页按钮入口：执行 gms.mqtt_net.stats.get_report() 并把报告打印进运行日志。"""
     server = globals().get("gms")

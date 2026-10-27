@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import com.chaquo.python.Python
 import com.kingzcheung.xime.BuildConfig
 import com.kingzcheung.xime.rime.RimeEngine
 import com.kingzcheung.xime.settings.SchemaManager
@@ -387,13 +388,33 @@ object RpcUiController {
         }
     }
 
+    /** RPC：构建信息；在基础字段上合并 Python 侧内置模块与 site-packages 摘要。
+     *  Python 未启动或 build_extra 失败时只附 python_error，绝不影响基础字段返回。
+     */
     @JvmStatic
-    fun buildInfo(): String = JSONObject()
-        .put("version_name", BuildConfig.VERSION_NAME)
-        .put("version_code", BuildConfig.VERSION_CODE)
-        .put("git_hash", BuildConfig.GIT_HASH)
-        .put("source_fingerprint", BuildConfig.SOURCE_FINGERPRINT)
-        .toString()
+    fun buildInfo(): String {
+        val info = JSONObject()
+            .put("version_name", BuildConfig.VERSION_NAME)
+            .put("version_code", BuildConfig.VERSION_CODE)
+            .put("git_hash", BuildConfig.GIT_HASH)
+            .put("source_fingerprint", BuildConfig.SOURCE_FINGERPRINT)
+        try {
+            if (Python.isStarted()) {
+                val extra = JSONObject(
+                    Python.getInstance()
+                        .getModule("app")
+                        .callAttr("build_extra")
+                        .toString()
+                )
+                for (key in extra.keys()) {
+                    info.put(key, extra.get(key))
+                }
+            }
+        } catch (e: Throwable) {
+            info.put("python_error", e.message ?: e.javaClass.simpleName)
+        }
+        return info.toString()
+    }
 
     @JvmStatic
     fun clearState() {
