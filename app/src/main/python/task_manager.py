@@ -7,7 +7,8 @@ Python 负责任务注册表、状态持久化、执行统计与接力下一次�
 任务一律由 RPC 远程下发，APK 内不硬编码任何任务（init 只从 JSON 恢复）。
 任务支持两种触发方式：
   1) 定时（interval）：用 OneTimeWorkRequest 自接力突破 15 分钟下限；
-  2) 事件（event）：订阅 NetworkEventMonitor 上报的事件，见 EVENTS 说明。
+  2) 每日定时（daily）：at="HH:MM"，按本地时区每天到点触发，执行后自接力；
+  3) 事件（event）：订阅 Kotlin 上报的事件（网络边沿、开机完成），见 EVENTS 说明。
 
 任务动作支持两种载体（二选一，code 优先）：
   - code：随任务下发的任意 Python 源码（运行在独立工作线程，print 既进 App
@@ -19,12 +20,15 @@ Python 负责任务注册表、状态持久化、执行统计与接力下一次�
   - func：内置函数名（JOB_FUNCS，仅保留少量示例函数，非任务）。
 
 事件清单（由 Kotlin 侧产生）：
+  boot_completed     设备开机完成（BootEventReceiver 写标记，首次 init 补发）
   wifi_connected     默认网络切到 WiFi 且边沿进入
   wifi_disconnected  默认网络离开 WiFi
   network_online     默认网络通过 NET_CAPABILITY_VALIDATED 校验
   network_offline    默认网络丢失/失效
 
 RPC 示例：
+  r=task_manager.add_daily_task("dailytest", "08:30",
+  ...   code='print("[每日] 触发", task_id)')
   r=task_manager.add_event_task("wifilog", "wifi_connected",
   ...   code='print("[事件] WiFi 已连接", payload)')
   r=task_manager.test_event("wifi_connected", {"wifi": True})   # 本地模拟
@@ -57,6 +61,7 @@ _RECENT_MAX = 50
 
 # 事件名白名单（仅用于 RPC 提示；fire_event 不强制，以后加事件不用改 Python）
 EVENTS = (
+    "boot_completed",
     "wifi_connected",
     "wifi_disconnected",
     "network_online",
@@ -100,18 +105,24 @@ def init(files_dir):
                 _STATE["tasks"] = data["tasks"]
         except (OSError, ValueError):
             pass
-        interval_n = event_n = 0
+        interval_n = daily_n = event_n = 0
         for task_id, t in _STATE["tasks"].items():
             if not t.get("enabled", True):
                 continue
-            if _kind(t) == "interval":
+            kind = _kind(t)
+            if kind == "interval":
                 _schedule(task_id, t.get("interval", 60))
                 interval_n += 1
+            elif kind == "daily":
+                _schedule(task_id, _daily_delay(t))
+                daily_n += 1
             else:
                 event_n += 1
     _ensure_event_worker()
+    consume_boot_pending()
     print(f"[task_manager] init done, {len(_STATE['tasks'])} tasks, "
-          f"{interval_n} interval rescheduled, {event_n} event tasks armed")
+          f"{interval_n} interval + {daily_n} daily rescheduled, "
+          f"{event_n} event tasks armed")
     return True
 
 
@@ -206,6 +217,61 @@ def add_event_task(task_id, event, code=None, func_name=None,
     return {"ok": True, "id": task_id, "kind": "event", "event": event}
 
 
+def _parse_hms(at):
+    """把 "HH:MM" / "HH:MM:SS" 解析成 (时, 分, 秒)；非法格式抛 ValueError。"""
+    parts = str(at).strip().split(":")
+    if len(parts) not in (2, 3):
+        raise ValueError("时间格式应为 HH:MM 或 HH:MM:SS")
+    hh, mm = int(parts[0]), int(parts[1])
+    ss = int(parts[2]) if len(parts) == 3 else 0
+    if not (0 <= hh < 24 and 0 <= mm < 60 and 0 <= ss < 60):
+        raise ValueError("时间超出范围")
+    return hh, mm, ss
+
+
+def _daily_delay(t):
+    """距下一次 at 时刻的秒数（本地时区；当天已过则顺延到明天）。"""
+    hh, mm, ss = _parse_hms(t.get("at", "00:00"))
+    now = time.time()
+    lt = time.localtime(now)
+    target = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, hh, mm, ss, 0, 0, -1))
+    if target <= now:
+        target += 86400
+    return int(max(1, target - now))
+
+
+def add_daily_task(task_id, at="00:00", code=None, func_name=None, enabled=True):
+    """新增/覆盖一个【每天定时】任务。at 为本地时间 "HH:MM" 或 "HH:MM:SS"。"""
+    if not code and func_name not in JOB_FUNCS:
+        return {"ok": False,
+                "error": "必须提供 code，或使用已注册 func",
+                "funcs": sorted(JOB_FUNCS)}
+    try:
+        _parse_hms(at)
+    except (ValueError, TypeError) as e:
+        return {"ok": False, "error": str(e), "at": at}
+    at = str(at).strip()
+    with _LOCK:
+        _STATE["tasks"][task_id] = {
+            "kind": "daily",
+            "at": at,
+            "func": func_name,
+            "code": code,
+            "enabled": bool(enabled),
+            "run_count": 0,
+            "last_run": None,
+            "last_result": None,
+            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        _save()
+        delay = _daily_delay(_STATE["tasks"][task_id])
+    if enabled:
+        _schedule(task_id, delay)
+    print(f"[task_manager] add daily {task_id} at={at} next={delay}s")
+    return {"ok": True, "id": task_id, "kind": "daily", "at": at,
+            "next_in": delay}
+
+
 def remove_task(task_id):
     with _LOCK:
         t = _STATE["tasks"].pop(task_id, None)
@@ -242,11 +308,14 @@ def resume_task(task_id):
             return {"ok": False, "error": "not found"}
         t["enabled"] = True
         _save()
-        kind, interval = _kind(t), t.get("interval", 60)
+        kind = _kind(t)
+        delay = t.get("interval", 60)
+        if kind == "daily":
+            delay = _daily_delay(t)
         event = t.get("event")
         _save()
-    if kind == "interval":
-        _schedule(task_id, interval)
+    if kind in ("interval", "daily"):
+        _schedule(task_id, delay)
     return {"ok": True, "kind": kind, "event": event}
 
 
@@ -323,6 +392,39 @@ def fire_event(event_name, payload=None, source="system"):
           f"payload={payload} matched={matches}")
     return {"ok": True, "event": event_name, "matched": matches,
             "queue": _EVENT_Q.qsize()}
+
+
+def is_initialized():
+    """Kotlin BootEventWorker 轮询用：init 是否已完成（状态路径已确定）。"""
+    return _STATE_PATH is not None
+
+
+def consume_boot_pending():
+    """消费开机待发标记并派发 boot_completed（幂等）。
+
+    标记由 Kotlin BootEventReceiver 写入；init 恢复完任务后调用，
+    BootEventWorker 在 Python 已就绪时也会补调一次，保证不丢事件。
+    """
+    if not _STATE_PATH:
+        return {"ok": False, "error": "not_initialized"}
+    marker = os.path.join(os.path.dirname(_STATE_PATH), "boot_pending")
+    if not os.path.exists(marker):
+        return {"ok": True, "fired": False}
+    try:
+        with open(marker, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+    except OSError:
+        raw = ""
+    try:
+        os.remove(marker)
+    except OSError:
+        pass
+    payload = {"boot": True,
+               "boot_epoch": int(raw) if raw.isdigit() else None,
+               "app_init_epoch": round(time.time(), 3)}
+    r = fire_event("boot_completed", payload, source="boot")
+    return {"ok": True, "fired": True, "payload": payload,
+            "matched": r.get("matched", [])}
 
 
 def _ensure_event_worker():
@@ -414,12 +516,14 @@ def _execute(task_id, t, event_name=None, payload=None):
                 t["last_event"] = event_name
                 t["last_payload"] = payload
             kind = _kind(t)
-            interval = t.get("interval", 60)
+            delay = t.get("interval", 60)
+            if kind == "daily":
+                delay = _daily_delay(t)
             enabled = t.get("enabled", True)
             _save()
-        # 定时任务执行后接力下一次；事件任务不调度
-        if kind == "interval" and enabled:
-            _schedule(task_id, interval)
+        # 定时/每日任务执行后接力下一次；事件任务不调度
+        if kind in ("interval", "daily") and enabled:
+            _schedule(task_id, delay)
     return "ok" if error is None else "error"
 
 
@@ -430,6 +534,6 @@ def execute_task(task_id):
     if t is None:
         print(f"[task_manager] execute {task_id}: 未注册，忽略")
         return "not_found"
-    if _kind(t) != "interval":
-        return "not_interval_task"
+    if _kind(t) not in ("interval", "daily"):
+        return "not_periodic_task"
     return _execute(task_id, t)

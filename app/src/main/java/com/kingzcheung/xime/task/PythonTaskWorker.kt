@@ -68,6 +68,15 @@ object TaskScheduler {
             .enqueueUniqueWork(workName(taskId), ExistingWorkPolicy.REPLACE, req)
     }
 
+    /** 开机完成：拉起一次 BootEventWorker，等 Python 初始化后由 init 补发事件。 */
+    @JvmStatic
+    fun scheduleBootEvent() {
+        val ctx = com.kingzcheung.xime.XimeApplication.instance
+        val req = OneTimeWorkRequestBuilder<BootEventWorker>().build()
+        WorkManager.getInstance(ctx)
+            .enqueueUniqueWork(BootEventWorker.WORK_NAME, ExistingWorkPolicy.REPLACE, req)
+    }
+
     @JvmStatic
     fun cancel(taskId: String) {
         val ctx = com.kingzcheung.xime.XimeApplication.instance

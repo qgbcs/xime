@@ -462,6 +462,16 @@
             android:exported="false"
             android:foregroundServiceType="camera|microphone|location|mediaPlayback" />
 
+        <!-- 开机完成事件：写待发标记并拉起 Python 补发 boot_completed -->
+        <receiver
+            android:name=".task.BootEventReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>
