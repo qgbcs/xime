@@ -225,7 +225,7 @@ fun SettingsScreen(
                 },
                 onNavigateToLocal = { navController.navigate(SettingsRoutes.SchemaLocal) },
                 onNavigateToModelLocal = { navController.navigate(SettingsRoutes.ModelLocal) },
-                initialTab = 1,
+                initialTab = 0,
             )
         }
         composable(SettingsRoutes.LogViewer) {
