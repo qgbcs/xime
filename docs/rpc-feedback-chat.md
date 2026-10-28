@@ -95,6 +95,61 @@ code = (
 print(client_mqtt.rpc(code, request_topic='Huawei_Nexus6P_568810', timeout=40, k=2**222, mb=6))
 ```
 
+## 发送信号与离线重试
+
+点击反馈页的“发送”按钮时，除了把文字存到本机，还会通过 `multi_mqtt` 的 `global_topic_list` 通道发布一次 `reason=ime_feedback` 的报告。报告只包含 `listen_topics` / `request_topic` / `reply_topic` / `stime`，**不包含消息正文**。
+
+发送流程：
+
+1. 点击后消息右下角先显示灰色小字“发送中…”。
+2. 后台线程调用 `gms.publish_global_topic_list_now('ime_feedback', confirm_timeout=2.0)`，等待 QoS1 PUBACK。
+3. `acked > 0` 视为成功，状态变“已发送”。
+4. 本机无在线 broker 或没有收到 PUBACK，状态变“待发送 · 网络恢复后自动重试”，同时注册两个 `task_manager` 任务：
+   - `ime_feedback_signal_net`：订阅 `network_online` 事件，网络恢复立即重发；
+   - `ime_feedback_signal_tick`：每 300 秒兜底重试一次。
+5. 重发成功（`acked > 0`）后所有待发送消息变“已发送”，并自动删除上述两个任务。
+
+应用下次启动时 `app.py` 会调用 `feature_feedback.init(files_dir)`，在后台最多等 20 秒 MQTT 上线后补发一次。
+
+消息文件里用户文字消息会多出 `id` 与 `signal` 字段，例如：
+
+```json
+{"id":"1793160040584_1","type":"text","text":"你好","ts":1793160040584,
+ "signal":{"state":"sent","acked":11,"queued":11,"online":11}}
+```
+
+`signal.state` 取值：`sending` 发送中、`sent` 已发送、`pending` 待发送。图片消息与 RPC 推送的消息不带 `signal`。
+
+### 相关 RPC
+
+```python
+code = r'''
+from com.kingzcheung.xime.util import RpcUiController
+# 立即发一次信号（不改变消息状态，用于排查链路）
+print(RpcUiController.feedbackSignalNow())
+# 查看在线 broker 数、待补发消息 id、重试任务运行情况
+print(RpcUiController.feedbackSignalStatus())
+'''
+```
+
+返回示例：
+
+```json
+{"ok": true, "reason": "ime_feedback", "topic": "global_topic_list",
+ "queued": 11, "acked": 11, "sent": true, "timeout": false,
+ "payload": {"reason": "ime_feedback", "listen_topics": ["x230"],
+             "request_topic": "x230", "reply_topic": "sys/device/response",
+             "stime": "2026-10-28__14.07.01__.712"}}
+```
+
+`feedbackSignalStatus()` 返回示例：
+
+```json
+{"ok": true, "online": 11, "pending": ["1793160040584_1"],
+ "retry_tasks": {"ime_feedback_signal_net": {"kind": "event", "run_count": 0,
+                 "last_run": null, "last_result": null}}}
+```
+
 ## 限制
 
 - RPC 只能推送文字消息，图片消息只能在本机通过“图片”按钮选择系统图片产生。

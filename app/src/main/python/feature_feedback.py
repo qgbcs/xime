@@ -9,11 +9,26 @@
 """
 import json
 import os
+import threading
 import time
 
 _DATA_SUBDIR = "feedback"
 _IMAGE_SUBDIR = "images"
 _REQUEST_PICK_IMAGE = 1001
+
+# 反馈信号：只发布“用户点了发送”这一事实，不含消息正文
+_SIGNAL_SENDING = "sending"
+_SIGNAL_SENT = "sent"
+_SIGNAL_PENDING = "pending"
+_SIGNAL_LOCK = threading.RLock()
+_RETRY_LOCK = threading.Lock()
+_FILES_DIR = None
+_SIGNAL_SEQ = 0
+_RETRY_NET_TASK = "ime_feedback_signal_net"
+_RETRY_TICK_TASK = "ime_feedback_signal_tick"
+_RETRY_INTERVAL_SECONDS = 300
+_RETRY_DEBOUNCE_SECONDS = 3.0
+_RETRY_STARTUP_WAIT_SECONDS = 20
 
 _PAGE_BG = "#F5F6FA"
 _BAR_BG = "#FFFFFF"
@@ -121,22 +136,50 @@ def _post(fn):
     Handler(Looper.getMainLooper()).post(_runnable_class()(fn))
 
 
-def _data_dir(context):
-    root = os.path.join(str(context.getFilesDir().getAbsolutePath()), _DATA_SUBDIR)
+def _files_root(context=None):
+    """取 filesDir：优先当前页面 context，其次 app.py start 时注入的私有目录。"""
+    if context is not None:
+        try:
+            return str(context.getFilesDir().getAbsolutePath())
+        except Exception:
+            pass
+    return _FILES_DIR
+
+
+def init(files_dir=None):
+    """app.py start 时调用：记录私有目录并补发上次没发成功的信号。"""
+    global _FILES_DIR
+    if not files_dir:
+        return False
+    _FILES_DIR = os.fspath(files_dir)
+    try:
+        threading.Thread(target=resume_pending_signals, daemon=True).start()
+    except Exception as error:
+        _log("resume pending", error)
+    return True
+
+
+def _data_dir(context=None):
+    root_dir = _files_root(context)
+    if not root_dir:
+        return None, None
+    root = os.path.join(root_dir, _DATA_SUBDIR)
     images = os.path.join(root, _IMAGE_SUBDIR)
     if not os.path.isdir(images):
         os.makedirs(images)
     return root, images
 
 
-def _messages_path(context):
+def _messages_path(context=None):
     root, _ = _data_dir(context)
+    if not root:
+        return None
     return os.path.join(root, "messages.json")
 
 
-def _load_messages(context):
+def _load_messages(context=None):
     path = _messages_path(context)
-    if not os.path.isfile(path):
+    if not path or not os.path.isfile(path):
         return []
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -148,9 +191,14 @@ def _load_messages(context):
 
 
 def _save_messages(context, messages):
+    path = _messages_path(context)
+    if not path:
+        return
+    temp = path + ".tmp"
     try:
-        with open(_messages_path(context), "w", encoding="utf-8") as handle:
+        with open(temp, "w", encoding="utf-8") as handle:
             json.dump(messages, handle, ensure_ascii=False)
+        os.replace(temp, path)
     except Exception as error:
         _log("save messages", error)
 
@@ -230,8 +278,283 @@ def _bubble(context, message):
     stamp.setPadding(0, _dp(context, 4), 0, 0)
     column.addView(stamp, LinearLayout.LayoutParams(wrap, wrap))
 
+    # 用户点“发送”后，在时间戳下用小灰字显示信号投递状态
+    signal = message.get("signal")
+    if isinstance(signal, dict) and not is_author:
+        status = TextView(context)
+        status.setText(_signal_label(signal))
+        status.setTextSize(10)
+        status.setTextColor(_color(_MUTED))
+        status.setGravity(align)
+        status.setPadding(0, _dp(context, 2), 0, 0)
+        column.addView(status, LinearLayout.LayoutParams(wrap, wrap))
+
     row.addView(column, LinearLayout.LayoutParams(wrap, wrap))
     return row
+
+
+def _new_message_id():
+    """消息唯一 id：毫秒时间戳 + 进程内自增，供补发线程按 id 回写状态。"""
+    global _SIGNAL_SEQ
+    with _SIGNAL_LOCK:
+        _SIGNAL_SEQ += 1
+        return "%d_%d" % (int(time.time() * 1000), _SIGNAL_SEQ)
+
+
+def _signal_label(signal):
+    state = str(signal.get("state") or "")
+    if state == _SIGNAL_SENT:
+        return "已发送"
+    if state == _SIGNAL_SENDING:
+        return "发送中…"
+    if state == _SIGNAL_PENDING:
+        return "待发送 · 网络恢复后自动重试"
+    return ""
+
+
+def _online_broker_count(server=None):
+    """本机 MQTT 在线 broker 数；取不到实例或异常一律按离线处理。"""
+    try:
+        if server is None:
+            import app
+            server = getattr(app, "gms", None) or getattr(app, "mqtt_server", None)
+        net = getattr(server, "mqtt_net", None) if server is not None else None
+        snapshot = net.get_connection_snapshot() if net is not None else None
+        if not isinstance(snapshot, dict):
+            return 0
+        return sum(1 for online in snapshot.values() if online)
+    except Exception:
+        return 0
+
+
+def _publish_signal(confirm_timeout=2.0):
+    """后台线程发布 ime_feedback 报告（不含正文），返回归一化发布状态。
+
+    成功口径：QoS1 收到 PUBACK（acked>0）；旧版接口无 acked 时退回 queued>0。
+    必须在后台线程调用：confirm_timeout 会阻塞等待确认。
+    """
+    import app
+    server = getattr(app, "gms", None) or getattr(app, "mqtt_server", None)
+    if server is None:
+        return {"ok": False, "sent": False, "error": "mqtt_unavailable", "online": 0}
+    online = _online_broker_count(server)
+    if online <= 0:
+        return {"ok": False, "sent": False, "error": "offline", "online": 0}
+    try:
+        publish_now = getattr(server, "publish_global_topic_list_now", None)
+        if publish_now is not None:
+            result = publish_now("ime_feedback", confirm_timeout=confirm_timeout)
+        else:
+            # 旧版 multi_mqtt 没有确认等待接口，退回原发布方法
+            result = server._publish_global_topic_list("ime_feedback")
+    except TypeError:
+        result = server._publish_global_topic_list("ime_feedback")
+    if not isinstance(result, dict):
+        return {"ok": False, "sent": False, "error": "bad_result", "online": online}
+    status = dict(result)
+    status["online"] = online
+    status.setdefault("sent", bool(status.get("acked") or status.get("queued")))
+    return status
+
+
+def _pending_signal_ids():
+    with _SIGNAL_LOCK:
+        active = _ACTIVE.get("state")
+        messages = active["messages"] if active is not None else _load_messages()
+        return [str(message.get("id"))
+                for message in messages
+                if isinstance(message.get("signal"), dict)
+                and message["signal"].get("state") in (_SIGNAL_SENDING, _SIGNAL_PENDING)]
+
+
+def _set_signal_state(message_id, state, status=None):
+    """按 id 回写 signal 状态并落盘；页面打开时切主线程重绘气泡。"""
+    status = status or {}
+    patch = {"state": state, "updated": int(time.time() * 1000)}
+    for key in ("ok", "queued", "acked", "timeout", "online", "error", "reason"):
+        if key in status:
+            patch[key] = status.get(key)
+    payload = status.get("payload")
+    if isinstance(payload, dict) and payload.get("stime"):
+        patch["stime"] = payload.get("stime")
+
+    with _SIGNAL_LOCK:
+        active = _ACTIVE.get("state")
+        context = _ACTIVE.get("context") if active is not None else None
+        messages = active["messages"] if active is not None else _load_messages()
+        target = None
+        for message in messages:
+            if str(message.get("id") or "") == message_id:
+                signal = message.get("signal")
+                if not isinstance(signal, dict):
+                    signal = {}
+                    message["signal"] = signal
+                if state == _SIGNAL_SENT:
+                    # 成功后清掉上一次失败的离线/超时错误，避免状态污染
+                    signal.pop("error", None)
+                signal.update(patch)
+                target = message
+                break
+        if target is None:
+            return False
+        _save_messages(context, messages)
+
+    if active is not None:
+        def refresh():
+            render = _ACTIVE.get("render")
+            if render is not None:
+                render()
+            scroller = _ACTIVE.get("scroll_bottom")
+            if scroller is not None:
+                scroller()
+        _post(refresh)
+    return True
+
+
+def _dispatch_signal(message_id):
+    """发送点击入口：离线直接挂起，在线则后台发布并回写状态。"""
+    if _online_broker_count() <= 0:
+        _set_signal_state(message_id, _SIGNAL_PENDING,
+                          {"ok": False, "sent": False, "error": "offline", "online": 0})
+        _ensure_retry_tasks()
+        return
+
+    def worker():
+        try:
+            status = _publish_signal()
+        except Exception as error:
+            _log("publish signal", error)
+            status = {"ok": False, "sent": False, "error": str(error)}
+        if status.get("sent"):
+            _set_signal_state(message_id, _SIGNAL_SENT, status)
+            _drop_retry_tasks_if_idle()
+        else:
+            _set_signal_state(message_id, _SIGNAL_PENDING, status)
+            _ensure_retry_tasks()
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _ensure_retry_tasks():
+    """登记网络恢复事件任务与 5 分钟兜底任务（幂等）。"""
+    try:
+        import task_manager
+        existing = task_manager.list_tasks()
+        code = ("import feature_feedback\n"
+                "print(feature_feedback.retry_pending_signals())")
+        if _RETRY_NET_TASK not in existing:
+            task_manager.add_event_task(
+                _RETRY_NET_TASK, "network_online", code=code,
+                debounce=_RETRY_DEBOUNCE_SECONDS,
+            )
+        if _RETRY_TICK_TASK not in existing:
+            task_manager.add_task(
+                _RETRY_TICK_TASK, interval=_RETRY_INTERVAL_SECONDS, code=code,
+            )
+    except Exception as error:
+        _log("ensure retry tasks", error)
+
+
+def _clear_retry_tasks():
+    try:
+        import task_manager
+        existing = task_manager.list_tasks()
+        for task_id in (_RETRY_NET_TASK, _RETRY_TICK_TASK):
+            if task_id in existing:
+                task_manager.remove_task(task_id)
+    except Exception as error:
+        _log("clear retry tasks", error)
+
+
+def _drop_retry_tasks_if_idle():
+    if not _pending_signal_ids():
+        _clear_retry_tasks()
+
+
+def retry_pending_signals():
+    """补发入口：所有待发送消息共发一次信号（不含正文），成功后收敛状态并清任务。"""
+    if not _RETRY_LOCK.acquire(False):
+        return {"ok": True, "skipped": "busy"}
+    try:
+        pending = _pending_signal_ids()
+        if not pending:
+            _clear_retry_tasks()
+            return {"ok": True, "pending": 0, "sent": 0}
+        _wait_online()
+        try:
+            status = _publish_signal()
+        except Exception as error:
+            _log("retry signals", error)
+            status = {"ok": False, "sent": False, "error": str(error)}
+        state = _SIGNAL_SENT if status.get("sent") else _SIGNAL_PENDING
+        for message_id in pending:
+            _set_signal_state(message_id, state, status)
+        if status.get("sent"):
+            _drop_retry_tasks_if_idle()
+        else:
+            _ensure_retry_tasks()
+        return {"ok": bool(status.get("ok")),
+                "pending": len(pending),
+                "sent": len(pending) if status.get("sent") else 0,
+                "online": status.get("online"),
+                "acked": status.get("acked"),
+                "queued": status.get("queued"),
+                "error": status.get("error")}
+    finally:
+        _RETRY_LOCK.release()
+
+
+def _wait_online(wait_seconds=10):
+    """等待 MQTT 至少一个 broker 在线；network_online 往往早于 MQTT 重连完成。"""
+    deadline = time.time() + max(0, int(wait_seconds))
+    while time.time() < deadline:
+        if _online_broker_count() > 0:
+            return True
+        time.sleep(1.0)
+    return _online_broker_count() > 0
+
+
+def resume_pending_signals(wait_seconds=_RETRY_STARTUP_WAIT_SECONDS):
+    """应用启动后补发一次：先等 MQTT 上线（最多 wait_seconds），再交给重试入口。"""
+    _wait_online(wait_seconds)
+    return retry_pending_signals()
+
+
+def publish_signal_now(timeout=2.0):
+    """RPC 入口：立即发布一次信号，返回 JSON（不改变消息状态）。"""
+    try:
+        status = _publish_signal(confirm_timeout=timeout)
+    except Exception as error:
+        _log("publish signal now", error)
+        status = {"ok": False, "sent": False, "error": str(error)}
+    return json.dumps(status, ensure_ascii=False)
+
+
+def signal_status():
+    """RPC 入口：返回在线数、待补发消息与重试任务概况。"""
+    try:
+        pending = _pending_signal_ids()
+        try:
+            import task_manager
+            existing = task_manager.list_tasks()
+        except Exception:
+            existing = {}
+        tasks = {}
+        for task_id in (_RETRY_NET_TASK, _RETRY_TICK_TASK):
+            task = existing.get(task_id)
+            if isinstance(task, dict):
+                tasks[task_id] = {
+                    "kind": task.get("kind"),
+                    "run_count": task.get("run_count"),
+                    "last_run": task.get("last_run"),
+                    "last_result": task.get("last_result"),
+                }
+        return json.dumps({"ok": True, "online": _online_broker_count(),
+                           "pending": pending, "retry_tasks": tasks},
+                          ensure_ascii=False)
+    except Exception as error:
+        _log("signal status", error)
+        return json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False)
 
 
 def build_view(context):
@@ -243,6 +566,9 @@ def build_view(context):
     match = ViewGroup.LayoutParams.MATCH_PARENT
     wrap = ViewGroup.LayoutParams.WRAP_CONTENT
 
+    global _FILES_DIR
+    if not _FILES_DIR:
+        _FILES_DIR = _files_root(context)
     state = {"messages": _load_messages(context)}
 
     root = LinearLayout(context)
@@ -350,8 +676,9 @@ def build_view(context):
             list_box.addView(_bubble(context, message), LinearLayout.LayoutParams(match, wrap))
 
     def append(message):
-        state["messages"].append(message)
-        _save_messages(context, state["messages"])
+        with _SIGNAL_LOCK:
+            state["messages"].append(message)
+            _save_messages(context, state["messages"])
         render()
         scroll_bottom()
 
@@ -360,7 +687,15 @@ def build_view(context):
         if not text:
             return
         editor.setText("")
-        append({"type": "text", "text": text, "ts": int(time.time() * 1000)})
+        message = {
+            "id": _new_message_id(),
+            "type": "text",
+            "text": text,
+            "ts": int(time.time() * 1000),
+            "signal": {"state": _SIGNAL_SENDING},
+        }
+        append(message)
+        _dispatch_signal(message["id"])
 
     def pick_image():
         try:
@@ -433,9 +768,10 @@ def push_message(context, sender, text):
             "sender": sender,
             "ts": int(time.time() * 1000),
         }
-        messages = _load_messages(context)
-        messages.append(message)
-        _save_messages(context, messages)
+        with _SIGNAL_LOCK:
+            messages = _load_messages(context)
+            messages.append(message)
+            _save_messages(context, messages)
         state = _ACTIVE.get("state")
         if state is not None:
             def update():

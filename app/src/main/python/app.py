@@ -358,6 +358,10 @@ def start(log_path, files_dir=None):
         import task_manager
         task_manager.init(files_dir or ".")
 
+        # 反馈信号：注入私有目录并后台补发上次网络异常时没发成功的记录
+        import feature_feedback
+        feature_feedback.init(files_dir)
+
         print(f"[app.py] {config} loaded, HTTP={http_server} MQTT={mqtt_server} ")
         return True
     except Exception:

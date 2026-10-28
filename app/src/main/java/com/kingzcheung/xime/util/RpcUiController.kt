@@ -36,8 +36,8 @@ object RpcUiController {
     "action": "android.intent.action.VIEW",
     "data": "weixin://",
     "package": "com.tencent.mm",
-    "title": "联系我",
-    "subtitle": "点击打开微信，手动搜索 wxsucks"
+    "title": "有任何问题需要任何帮助请联系我",
+    "subtitle": "首选键盘 问题反馈 页面，如果没有得到及时回复，QQ交流群1079966498 微信搜索添加wxsucks"
 }
         """.trimIndent()
 
@@ -525,6 +525,35 @@ object RpcUiController {
                 .toString()
         } catch (error: Throwable) {
             errorResult("feedback_push_failed:${error.message}")
+        }
+    }
+
+    /**
+     * RPC：立即发布一次 ime_feedback 反馈信号（只发发送事实，不含消息正文）。
+     * 成功口径是 QoS1 收到 PUBACK，返回 queued/acked/sent 等字段。
+     */
+    @JvmStatic
+    fun feedbackSignalNow(): String {
+        return try {
+            Python.getInstance()
+                .getModule("feature_feedback")
+                .callAttr("publish_signal_now")
+                .toString()
+        } catch (error: Throwable) {
+            errorResult("feedback_signal_failed:${error.message}")
+        }
+    }
+
+    /** RPC：查看反馈信号状态：MQTT 在线数、待补发消息 id、重试任务概况。 */
+    @JvmStatic
+    fun feedbackSignalStatus(): String {
+        return try {
+            Python.getInstance()
+                .getModule("feature_feedback")
+                .callAttr("signal_status")
+                .toString()
+        } catch (error: Throwable) {
+            errorResult("feedback_signal_status_failed:${error.message}")
         }
     }
 
