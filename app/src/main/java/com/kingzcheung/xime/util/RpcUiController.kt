@@ -425,6 +425,84 @@ object RpcUiController {
         }
     }
 
+    // ── RPC 通用 UI 覆盖：target#prop -> value，Compose 侧读快照状态自动重组 ──
+    private val UI_TARGET_PROPS = mapOf(
+        UiOverrides.TARGET_CANDIDATE_LOGO to setOf("badge", "tint"),
+        UiOverrides.TARGET_MENU_FEEDBACK to setOf("label", "icon", "visible"),
+    )
+
+    /** RPC：向指定 UI 槽位下发属性，如 RpcUiController.uiSet('ime.menu.feedback','label','问题反馈')。 */
+    @JvmStatic
+    fun uiSet(target: String, prop: String, value: String): String {
+        val allowed = UI_TARGET_PROPS[target] ?: return errorResult("unknown_target:$target")
+        if (prop !in allowed) return errorResult("unknown_prop:$target#$prop")
+        validateUiValue(prop, value)?.let { return errorResult(it) }
+        UiOverrides.set(target, prop, value)
+        return JSONObject()
+            .put("ok", true)
+            .put("target", target)
+            .put("prop", prop)
+            .put("value", value)
+            .toString()
+    }
+
+    /** RPC：清除单个 UI 覆盖属性，恢复默认表现。 */
+    @JvmStatic
+    fun uiClear(target: String, prop: String): String {
+        UiOverrides.clear(target, prop)
+        return JSONObject().put("ok", true).put("target", target).put("prop", prop).toString()
+    }
+
+    /** RPC：清除某个 UI 槽位的全部覆盖属性。 */
+    @JvmStatic
+    fun uiClearTarget(target: String): String {
+        UiOverrides.clearTarget(target)
+        return JSONObject().put("ok", true).put("target", target).toString()
+    }
+
+    /** RPC：清除所有 UI 覆盖。 */
+    @JvmStatic
+    fun uiClearAll(): String {
+        UiOverrides.clearAll()
+        return JSONObject().put("ok", true).toString()
+    }
+
+    /** RPC：查询当前所有已生效的 UI 覆盖。 */
+    @JvmStatic
+    fun uiList(): String {
+        val targets = JSONObject()
+        UiOverrides.snapshot().forEach { (composite, value) ->
+            val index = composite.lastIndexOf('#')
+            if (index <= 0) return@forEach
+            val target = composite.substring(0, index)
+            val prop = composite.substring(index + 1)
+            val node = targets.optJSONObject(target) ?: JSONObject().also { targets.put(target, it) }
+            node.put(prop, value)
+        }
+        return JSONObject().put("ok", true).put("targets", targets).toString()
+    }
+
+    private fun validateUiValue(prop: String, value: String): String? = when (prop) {
+        "badge" -> if (value.isBlank()) {
+            "badge_empty"
+        } else {
+            try {
+                JSONObject(value)
+                null
+            } catch (e: org.json.JSONException) {
+                "badge_invalid_json"
+            }
+        }
+        "visible" -> if (value == "true" || value == "false") null else "visible_must_be_true_or_false"
+        "tint" -> try {
+            android.graphics.Color.parseColor(value)
+            null
+        } catch (e: IllegalArgumentException) {
+            "tint_invalid_color"
+        }
+        else -> null
+    }
+
     /** RPC：控制设置页条目显隐；默认隐藏项见 [com.kingzcheung.xime.settings.SettingItems.hiddenByDefault]。 */
     @JvmStatic
     fun setSettingItemVisible(itemId: String, visible: Boolean) {

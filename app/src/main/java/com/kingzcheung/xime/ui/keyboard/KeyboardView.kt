@@ -61,6 +61,7 @@ import com.kingzcheung.xime.service.CandidateState
 import com.kingzcheung.xime.settings.KeysConfigHelper
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.ui.menubar.ClipboardView
+import com.kingzcheung.xime.ui.menubar.FeedbackPageView
 import com.kingzcheung.xime.ui.menubar.SchemaListView
 import com.kingzcheung.xime.ui.menubar.ToolbarCustomizeView
 import com.kingzcheung.xime.ui.theme.KeyboardThemes
@@ -999,6 +1000,7 @@ fun KeyboardView(
                             onQuickSend = { viewModel.showOverlay(OverlayRoute.Clipboard(1)); callbacks.onQuickSend?.invoke() },
                             onKeyboardResize = { callbacks.onKeyboardResize?.invoke(); viewModel.closeOverlay() },
                             onEmoji = { viewModel.showOverlay(OverlayRoute.Emoji) },
+                            onFeedback = { viewModel.showOverlay(OverlayRoute.Feedback) },
                             onReloadConfig = { callbacks.onReloadConfig?.invoke(); viewModel.closeOverlay() },
                             onSettings = { callbacks.onSettings?.invoke(); viewModel.closeOverlay() },
                             onSchemaList = { viewModel.pushOverlay(OverlayRoute.SchemaList) },
@@ -1070,6 +1072,13 @@ fun KeyboardView(
                         textColor = keyTextColor,
                         accentColor = accentColor,
                         bottomPaddingDp = state.keyboardBottomPaddingDp,
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight()
+                    )
+                    is OverlayRoute.Feedback -> FeedbackPageView(
+                        backgroundColor = keyboardBgColor,
+                        textColor = keyTextColor,
+                        accentColor = accentColor,
+                        onBack = { viewModel.closeOverlay() },
                         modifier = Modifier.fillMaxWidth().fillMaxHeight()
                     )
                     is OverlayRoute.Symbol -> SymbolKeyboardLayout(

@@ -67,6 +67,8 @@ import com.kingzcheung.xime.keyboard.PanelType
 import com.kingzcheung.xime.keyboard.ToolbarAction
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.speech.RecognitionState
+import com.kingzcheung.xime.ui.rpc.UiBadgeHost
+import com.kingzcheung.xime.util.UiOverrides
 
 @Immutable
 data class CandidateBarVisuals(
@@ -364,19 +366,28 @@ fun CandidateBar(
                                 )
                             }
                         } else {
-                            Box(
-                                modifier = Modifier
-                                    .size(28.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .clickable { callbacks.onLogoClick?.invoke() },
-                                contentAlignment = Alignment.Center
+                            // RPC 槽位：主图标色调由 ime.candidate.logo#tint 下发，角标由 #badge 下发
+                            val logoTint = UiOverrides.get(UiOverrides.TARGET_CANDIDATE_LOGO, "tint")
+                                ?.let { runCatching { Color(android.graphics.Color.parseColor(it)) }.getOrNull() }
+                                ?: Color.Unspecified
+                            UiBadgeHost(
+                                target = UiOverrides.TARGET_CANDIDATE_LOGO,
+                                modifier = Modifier.size(28.dp)
                             ) {
-                                Icon(
-                                    painter = painterResource(R.drawable.ic_launcher_foreground),
-                                    contentDescription = "${BuildConfig.APP_CHINESE_NAME} Logo",
-                                    tint = Color.Unspecified,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .clickable { callbacks.onLogoClick?.invoke() },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_launcher_foreground),
+                                        contentDescription = "${BuildConfig.APP_CHINESE_NAME} Logo",
+                                        tint = logoTint,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                         Spacer(modifier = Modifier.width(2.dp))
