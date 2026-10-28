@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -46,6 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kingzcheung.xime.ui.rpc.UiBadgeHost
 import com.kingzcheung.xime.util.UiOverrides
 import com.kingzcheung.xime.viewmodel.SchemaSwitchUiState
 
@@ -54,6 +56,8 @@ data class MenuItem(
     val label: String,
     val action: () -> Unit,
     val textIcon: String? = null,
+    // 该菜单项右上角角标绑定的 RPC 槽位；null 表示不叠加角标
+    val badgeTarget: String? = null,
 )
 
 data class MenuBarState(
@@ -151,7 +155,13 @@ fun MenuBar(
             MenuItem(emojiIcon, "表情", callbacks.onEmoji),
         ) + listOfNotNull(
             if (feedbackVisible) {
-                MenuItem(icon = null, label = feedbackLabel, action = callbacks.onFeedback, textIcon = feedbackGlyph)
+                MenuItem(
+                    icon = null,
+                    label = feedbackLabel,
+                    action = callbacks.onFeedback,
+                    textIcon = feedbackGlyph,
+                    badgeTarget = UiOverrides.TARGET_MENU_FEEDBACK,
+                )
             } else null
         ) + switchItems + listOf(
             MenuItem(customizeIcon, "定制工具栏", callbacks.onToolbarCustomize),
@@ -303,9 +313,28 @@ fun MenuItemButton(
     modifier: Modifier = Modifier,
     isLandscape: Boolean = false
 ) {
+    val itemModifier = modifier
+        .then(if (isLandscape) Modifier.height(72.dp) else Modifier.aspectRatio(1f))
+    val badgeTarget = item.badgeTarget
+    if (badgeTarget != null) {
+        UiBadgeHost(target = badgeTarget, modifier = itemModifier) {
+            MenuItemButtonContent(item, bgColor, textColor, isLandscape, Modifier.fillMaxSize())
+        }
+    } else {
+        MenuItemButtonContent(item, bgColor, textColor, isLandscape, itemModifier)
+    }
+}
+
+@Composable
+private fun MenuItemButtonContent(
+    item: MenuItem,
+    bgColor: Color,
+    textColor: Color,
+    isLandscape: Boolean,
+    modifier: Modifier
+) {
     Column(
         modifier = modifier
-            .then(if (isLandscape) Modifier.height(72.dp) else Modifier.aspectRatio(1f))
             .clip(RoundedCornerShape(12.dp))
             .background(bgColor)
             .clickable { item.action() }

@@ -407,6 +407,14 @@
             </intent-filter>
         </activity>
 
+        <!-- 独立反馈页：界面由 feature_feedback.py 用原生 View 自绘，adjustResize 避免键盘遮挡输入栏 -->
+        <activity
+            android:name=".ui.feedback.FeedbackActivity"
+            android:exported="false"
+            android:label="问题反馈"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- 启动入口别名 -->
         <activity-alias
             android:name="${applicationId}.LauncherAlias"

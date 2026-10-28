@@ -37,4 +37,10 @@ object UiOverrides {
     }
 
     fun snapshot(): Map<String, String> = values.toMap()
+
+    /** 反馈红点链路：候选栏图标与菜单反馈项共享同一枚角标。 */
+    fun clearBadgeChain() {
+        clear(TARGET_CANDIDATE_LOGO, "badge")
+        clear(TARGET_MENU_FEEDBACK, "badge")
+    }
 }

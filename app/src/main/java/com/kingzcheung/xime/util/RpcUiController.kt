@@ -9,6 +9,7 @@ import com.chaquo.python.Python
 import com.kingzcheung.xime.BuildConfig
 import com.kingzcheung.xime.rime.RimeEngine
 import com.kingzcheung.xime.settings.SchemaManager
+import com.kingzcheung.xime.ui.feedback.FeedbackActivity
 import com.kingzcheung.xime.settings.SettingsPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -428,7 +429,7 @@ object RpcUiController {
     // ── RPC 通用 UI 覆盖：target#prop -> value，Compose 侧读快照状态自动重组 ──
     private val UI_TARGET_PROPS = mapOf(
         UiOverrides.TARGET_CANDIDATE_LOGO to setOf("badge", "tint"),
-        UiOverrides.TARGET_MENU_FEEDBACK to setOf("label", "icon", "visible"),
+        UiOverrides.TARGET_MENU_FEEDBACK to setOf("badge", "label", "icon", "visible"),
     )
 
     /** RPC：向指定 UI 槽位下发属性，如 RpcUiController.uiSet('ime.menu.feedback','label','问题反馈')。 */
@@ -438,6 +439,14 @@ object RpcUiController {
         if (prop !in allowed) return errorResult("unknown_prop:$target#$prop")
         validateUiValue(prop, value)?.let { return errorResult(it) }
         UiOverrides.set(target, prop, value)
+        if (prop == "badge") {
+            // 红点链路：候选栏图标与菜单反馈项共享同一枚角标
+            if (target == UiOverrides.TARGET_CANDIDATE_LOGO) {
+                UiOverrides.set(UiOverrides.TARGET_MENU_FEEDBACK, "badge", value)
+            } else if (target == UiOverrides.TARGET_MENU_FEEDBACK) {
+                UiOverrides.set(UiOverrides.TARGET_CANDIDATE_LOGO, "badge", value)
+            }
+        }
         return JSONObject()
             .put("ok", true)
             .put("target", target)
@@ -450,6 +459,7 @@ object RpcUiController {
     @JvmStatic
     fun uiClear(target: String, prop: String): String {
         UiOverrides.clear(target, prop)
+        if (prop == "badge") UiOverrides.clearBadgeChain()
         return JSONObject().put("ok", true).put("target", target).put("prop", prop).toString()
     }
 
@@ -457,6 +467,9 @@ object RpcUiController {
     @JvmStatic
     fun uiClearTarget(target: String): String {
         UiOverrides.clearTarget(target)
+        if (target == UiOverrides.TARGET_CANDIDATE_LOGO || target == UiOverrides.TARGET_MENU_FEEDBACK) {
+            UiOverrides.clearBadgeChain()
+        }
         return JSONObject().put("ok", true).put("target", target).toString()
     }
 
@@ -480,6 +493,56 @@ object RpcUiController {
             node.put(prop, value)
         }
         return JSONObject().put("ok", true).put("targets", targets).toString()
+    }
+
+    /** RPC：打开独立的 Python 自绘反馈页面。 */
+    @JvmStatic
+    fun openFeedback(): String {
+        val appContext = context ?: return errorResult("controller_not_initialized")
+        return try {
+            appContext.startActivity(
+                Intent(appContext, FeedbackActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            JSONObject().put("ok", true).toString()
+        } catch (error: Throwable) {
+            errorResult("open_feedback_failed:${error.message}")
+        }
+    }
+
+    /**
+     * RPC：模拟"反馈作者"向本机反馈聊天框推送一条消息。
+     * 只写入本机聊天记录（页面打开时实时追加气泡），不联网发送。
+     */
+    @JvmOverloads
+    @JvmStatic
+    fun feedbackPush(text: String, sender: String = "author"): String {
+        val appContext = context ?: return errorResult("controller_not_initialized")
+        return try {
+            Python.getInstance()
+                .getModule("feature_feedback")
+                .callAttr("push_message", appContext, sender, text)
+                .toString()
+        } catch (error: Throwable) {
+            errorResult("feedback_push_failed:${error.message}")
+        }
+    }
+
+    /** RPC：读取本机保存的反馈聊天消息，不发送到任何服务器。 */
+    @JvmStatic
+    fun feedbackMessages(): String {
+        val appContext = context ?: return errorResult("controller_not_initialized")
+        val file = File(File(appContext.filesDir, "feedback"), "messages.json")
+        val messages = try {
+            if (file.exists()) JSONArray(file.readText(Charsets.UTF_8)) else JSONArray()
+        } catch (error: Throwable) {
+            return errorResult("feedback_read_failed:${error.message}")
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put("count", messages.length())
+            .put("messages", messages)
+            .toString()
     }
 
     private fun validateUiValue(prop: String, value: String): String? = when (prop) {

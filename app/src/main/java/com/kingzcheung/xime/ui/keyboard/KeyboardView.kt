@@ -60,14 +60,15 @@ import com.kingzcheung.xime.rime.T9InputController
 import com.kingzcheung.xime.service.CandidateState
 import com.kingzcheung.xime.settings.KeysConfigHelper
 import com.kingzcheung.xime.settings.SettingsPreferences
+import com.kingzcheung.xime.ui.feedback.FeedbackActivity
 import com.kingzcheung.xime.ui.menubar.ClipboardView
-import com.kingzcheung.xime.ui.menubar.FeedbackPageView
 import com.kingzcheung.xime.ui.menubar.SchemaListView
 import com.kingzcheung.xime.ui.menubar.ToolbarCustomizeView
 import com.kingzcheung.xime.ui.theme.KeyboardThemes
 import com.kingzcheung.xime.ui.theme.keyboardBackground
 import com.kingzcheung.xime.util.FileLogger
 import com.kingzcheung.xime.util.PermissionHelper
+import com.kingzcheung.xime.util.UiOverrides
 import com.kingzcheung.xime.viewmodel.KeyboardUiState
 import com.kingzcheung.xime.viewmodel.KeyboardViewModel
 import kotlin.math.abs
@@ -1000,7 +1001,12 @@ fun KeyboardView(
                             onQuickSend = { viewModel.showOverlay(OverlayRoute.Clipboard(1)); callbacks.onQuickSend?.invoke() },
                             onKeyboardResize = { callbacks.onKeyboardResize?.invoke(); viewModel.closeOverlay() },
                             onEmoji = { viewModel.showOverlay(OverlayRoute.Emoji) },
-                            onFeedback = { viewModel.showOverlay(OverlayRoute.Feedback) },
+                            onFeedback = {
+                                // 点击反馈入口即消耗红点链路，然后打开独立的 Python 自绘页面
+                                UiOverrides.clearBadgeChain()
+                                viewModel.closeOverlay()
+                                FeedbackActivity.start(context)
+                            },
                             onReloadConfig = { callbacks.onReloadConfig?.invoke(); viewModel.closeOverlay() },
                             onSettings = { callbacks.onSettings?.invoke(); viewModel.closeOverlay() },
                             onSchemaList = { viewModel.pushOverlay(OverlayRoute.SchemaList) },
@@ -1072,13 +1078,6 @@ fun KeyboardView(
                         textColor = keyTextColor,
                         accentColor = accentColor,
                         bottomPaddingDp = state.keyboardBottomPaddingDp,
-                        modifier = Modifier.fillMaxWidth().fillMaxHeight()
-                    )
-                    is OverlayRoute.Feedback -> FeedbackPageView(
-                        backgroundColor = keyboardBgColor,
-                        textColor = keyTextColor,
-                        accentColor = accentColor,
-                        onBack = { viewModel.closeOverlay() },
                         modifier = Modifier.fillMaxWidth().fillMaxHeight()
                     )
                     is OverlayRoute.Symbol -> SymbolKeyboardLayout(
