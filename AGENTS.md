@@ -11,7 +11,7 @@
 - [插件开发指南](https://ime.ximei.me/plugins/PLUGIN_DEVELOPMENT_GUIDE) - 开发插件时必读
 
 ## 硬性规则（必须遵守，CI 会验证）
-- 禁止自己提交代码
+- 禁止自己提交代码 除非用户要求
 - PR 必须遵循最小修改原则
 - 贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)
 - 禁止使用 `./gradlew clean`
@@ -24,6 +24,7 @@
 - 当前功能点端到端验证通过后，才能开始下一个
 - 不要在实现功能 A 时"顺便"重构功能 B
 - 当觉得有必要时，就添加单元测试
+- 提交时不忽略 `app/src/main/python/multi_mqtt/` 的改动 ，只是在commit msg 不关注这个文件夹。这是第三方库依赖
 
 
 ## 每次会话开始时（上班打卡）
