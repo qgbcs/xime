@@ -8,6 +8,7 @@
   首次发布 -> 普通 commit + push；
   后续发布 -> `git commit --amend` + `git push --force-with-lease`，
   这样 63MB 的 blob 不会每构建一次就在历史里再存一份。
+- 同时发布 SHA256SUMS.txt（sha256sum -c 兼容格式），下载大文件前可先取它校验。
 - 结束后打印 ghfast.top 加速直链（https://ghfast.top/https://github.com/...）。
 
 前置条件:
@@ -54,6 +55,7 @@ DEFAULT_OUT_DIR = Path("/root/build_xime_home/xime/out")
 APK_PATTERN = "com.qgb.xime-*-arm64-v8a.apk"
 DEFAULT_PUBLISH_NAME = "ime.apk"
 DEFAULT_MESSAGE = "ime.apk 覆盖更新（xime arm64-v8a）"
+SUMS_NAME = "SHA256SUMS.txt"
 # GitHub 单文件硬上限 100MiB；超过直接拦下
 MAX_FILE_MIB = 100.0
 
@@ -81,6 +83,11 @@ def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
         for block in iter(lambda: f.read(chunk), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def sums_text(name: str, digest: str) -> str:
+    """sha256sum -c 兼容格式：摘要 + 两个空格 + 文件名 + 换行。"""
+    return "%s  %s\n" % (digest, name)
 
 
 # ---------------------------------------------------------------- key / git
@@ -259,6 +266,7 @@ def main(argv: "list[str] | None" = None) -> int:
     if size > MAX_FILE_MIB * 1024 * 1024:
         die("APK %s 超过 GitHub 单文件 %.0fMiB 上限" % (human_size(size), MAX_FILE_MIB))
     digest = sha256_file(apk)
+    sums = sums_text(args.name, digest)
     log("APK      : %s (%s)" % (apk, human_size(size)))
     log("SHA256   : %s" % digest)
 
@@ -267,6 +275,7 @@ def main(argv: "list[str] | None" = None) -> int:
     repo = args.repo.rstrip("/")
     branch = args.branch
     raw, fast, direct = build_links(repo, branch, args.name)
+    sums_raw, sums_fast, _ = build_links(repo, branch, SUMS_NAME)
     msg = args.message or "%s（构建 %s，%s，sha256 %s）" % (
         DEFAULT_MESSAGE, apk.name, human_size(size), digest)
 
@@ -276,31 +285,36 @@ def main(argv: "list[str] | None" = None) -> int:
     # 比对仓库里已有的同名文件与本地 APK（git blob 相同即内容相同）
     local_blob = ""
     head_blob = ""
+    sums_same = False
     if workdir.is_dir():
         local_blob = git(["hash-object", str(apk)], workdir, env,
                          allow_fail=True).stdout.strip()
         head_blob = git(["rev-parse", "HEAD:%s" % args.name], workdir, env,
                         allow_fail=True).stdout.strip()
-    same = bool(local_blob) and local_blob == head_blob
+        show = git(["show", "HEAD:%s" % SUMS_NAME], workdir, env, allow_fail=True)
+        sums_same = show.returncode == 0 and (show.stdout or "") == sums
+    same = bool(local_blob) and local_blob == head_blob and sums_same
 
     if args.dry_run:
         rhead = remote_head(workdir, env, branch) if workdir.is_dir() else None
         log("远端分支 : %s" % ((rhead or "(空仓库/无该分支)")))
-        log("APK 变化 : %s" % ("否（重复运行会跳过）" if same and not args.force
+        log("APK/SUMS : %s" % ("否（重复运行会跳过）" if same and not args.force
                               else "是/无法判断（会提交并推送）"))
         if same and not args.force:
-            log("\n[dry-run] APK 与仓库一致，实际运行会直接跳过（加 --force 才会重写）")
+            log("\n[dry-run] APK 与 %s 都和仓库一致，实际运行会直接跳过（加 --force 才会重写）"
+                % SUMS_NAME)
         else:
-            log("\n[dry-run] 将执行：复制为 %s → %s → %s"
-                % (args.name,
+            log("\n[dry-run] 将执行：写入 %s + %s → %s → %s"
+                % (args.name, SUMS_NAME,
                    "git commit --amend" if rhead and head_count(workdir, env) else "git commit",
                    "git push --force-with-lease" if rhead else "git push -u origin %s" % branch))
-        log("加速直链 : %s" % fast)
+        log("APK 加速  : %s" % fast)
+        log("SUMS 加速 : %s" % sums_fast)
         return 0
 
     if same and not args.force:
-        log("APK 与仓库 HEAD:%s 一致（blob %s），跳过 amend/推送；要强制重写加 --force"
-            % (args.name, local_blob))
+        log("APK 与 %s 都与仓库 HEAD 一致（blob %s），跳过 amend/推送；要强制重写加 --force"
+            % (SUMS_NAME, local_blob))
         return 0
 
     # 3) 放入仓库（跨文件系统时退回复制）
@@ -316,13 +330,16 @@ def main(argv: "list[str] | None" = None) -> int:
     if sha256_file(dest) != digest:
         die("复制后 SHA256 不一致：%s" % dest, code=1)
 
+    # 同一次提交里放校验文件：下载方先取 SHA256SUMS.txt，再下大文件
+    (workdir / SUMS_NAME).write_text(sums, encoding="utf-8")
+
     git(["config", "user.name"], workdir, env, allow_fail=True)
     if git(["config", "user.email"], workdir, env, allow_fail=True).returncode != 0:
         git(["config", "user.email", "qgbcs1@gmail.com"], workdir, env, allow_fail=True)
     if git(["config", "user.name"], workdir, env, allow_fail=True).returncode != 0:
         git(["config", "user.name", "QGB"], workdir, env, allow_fail=True)
 
-    git(["add", args.name], workdir, env)
+    git(["add", args.name, SUMS_NAME], workdir, env)
     count = head_count(workdir, env)
     rhead = remote_head(workdir, env, branch)
 
@@ -357,6 +374,8 @@ def main(argv: "list[str] | None" = None) -> int:
     log("  加速链接 : %s" % fast)
     log("  源站直连 : %s" % direct)
     log("  SHA256   : %s" % digest)
+    log("  SUMS     : %s" % sums_raw)
+    log("  SUMS 加速: %s" % sums_fast)
     if args.check_url:
         log("  链接探测 : %s" % check_url(fast))
     return 0

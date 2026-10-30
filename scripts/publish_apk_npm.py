@@ -99,22 +99,30 @@ def sha1_file(path: Path, chunk: int = 1 << 20) -> str:
 
 
 # 本地状态缓存：记录上次发布版本的 APK sha256，避免每次都下载 60MB tarball 比对
-STATE_FILE = DEFAULT_OUT_DIR / ".npm_publish_state.json"
+# 默认写在 ~/.cache/xime_publish/npm_state.json，不落进 xime 仓库；可用环境变量覆盖
+
+def state_file() -> Path:
+    env = os.environ.get("XIME_PUBLISH_STATE")
+    if env and env.strip():
+        return Path(env).expanduser()
+    return Path.home() / ".cache" / "xime_publish" / "npm_state.json"
 
 
 def read_state() -> dict:
     try:
-        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        data = json.loads(state_file().read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001 - 缓存坏了就当没有
         return {}
 
 
 def write_state(version: str, digest: str, pkg: str) -> None:
+    p = state_file()
     try:
-        STATE_FILE.write_text(json.dumps({"package": pkg, "version": version,
-                                          "sha256": digest}, ensure_ascii=False),
-                              encoding="utf-8")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"package": pkg, "version": version,
+                                 "sha256": digest}, ensure_ascii=False),
+                     encoding="utf-8")
     except OSError as exc:
         log("  [WARN] 写本地发布状态失败：%s" % exc)
 
@@ -136,7 +144,7 @@ def read_npmrc_token() -> "str | None":
         return None
     for line in text.splitlines():
         line = line.strip()
-        if line.startswith("#") or "_authToken" not in line:
+        if line.startswith(("#", ";")) or "_authToken" not in line:
             continue
         m = re.match(r".*_authToken\s*=\s*(\S+)", line)
         if m:
@@ -164,9 +172,12 @@ def save_token(token: str, registry: str) -> Path:
     host = urllib.parse.urlparse(registry).netloc or "registry.npmjs.org"
     p = npmrc_path()
     p.parent.mkdir(parents=True, exist_ok=True)
+    marker = "; npm token for %s publish (written by publish_apk_npm.py --save-token)" % host
     lines, replaced = [], False
     if p.is_file():
         for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if line.strip().startswith(marker):
+                continue  # 旧注释头，重写时丢掉
             if re.match(r"\s*//%s/:_authToken\s*=" % re.escape(host), line):
                 lines.append("//%s/:_authToken=%s" % (host, token))
                 replaced = True
@@ -176,7 +187,7 @@ def save_token(token: str, registry: str) -> Path:
         lines.append("//%s/:_authToken=%s" % (host, token))
     if not any(l.startswith("registry=") for l in lines):
         lines.append("registry=%s/" % registry.rstrip("/"))
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    p.write_text(marker + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
     try:
         os.chmod(p, 0o600)
     except OSError:
@@ -337,12 +348,18 @@ https://cdn.jsdelivr.net/npm/{pkg}@latest/{name}   # 注意 jsDelivr npm 单文�
 {reg_tarball}
 ```
 
-解包后先用 `SHA256SUMS.txt` 校验再安装：
+### 先取 SHA256SUMS.txt，再下大文件
+
+`SHA256SUMS.txt` 只有几十字节，建议先请求它，再请求 60MB+ 的 APK：
 
 ```bash
-sha256sum -c SHA256SUMS.txt
+curl -fsSL https://unpkg.com/{pkg}@latest/SHA256SUMS.txt -o SHA256SUMS.txt
+curl -fL  https://unpkg.com/{pkg}@latest/{name} -o {name}
+sha256sum -c SHA256SUMS.txt      # Windows: certutil -hashfile {name} SHA256
 adb install -r {name}
 ```
+
+`npm pack` 得到的 tgz 解包后，同样可用包内 `SHA256SUMS.txt` 校验。
 """.format(pkg=pkg, version=version, tag=tag, name=pub_name, src=apk.name,
            size=human_size(size), sha=digest,
            when=time.strftime("%Y-%m-%d %H:%M:%S"),
