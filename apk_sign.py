@@ -37,12 +37,72 @@
 import argparse
 import datetime
 import hashlib
+import importlib.util
 import os
 import re
 import struct
 import subprocess
 import sys
 from pathlib import Path
+
+
+def _pip_install(packages, index_url):
+    command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "-i",
+        index_url,
+    ]
+    if "tuna" in index_url:
+        command += ["--trusted-host", "pypi.tuna.tsinghua.edu.cn"]
+    try:
+        subprocess.check_call(command + list(packages))
+        return True
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"[!] 使用 {index_url} 安装依赖失败: {error}", file=sys.stderr)
+        return False
+
+
+def ensure_dependencies():
+    """缺依赖时自动 pip 安装（同 multi_mqtt.py 的机制）。"""
+    packages = {
+        "cryptography": "cryptography",
+        "ecdsa": "ecdsa",
+        "asn1crypto": "asn1crypto",
+    }
+    missing = [package for module, package in packages.items()
+               if importlib.util.find_spec(module) is None]
+    if not missing:
+        return
+
+    print(f"[+] 缺少依赖: {', '.join(missing)}，开始自动安装 ...")
+    # 可用 APK_SIGN_PIP_INDEX 指定源；默认按环境选源，失败自动换下一个源。
+    override = os.environ.get("APK_SIGN_PIP_INDEX", "").strip()
+    if override:
+        index_urls = [override]
+    elif "PYTHONANYWHERE_DOMAIN" in os.environ or "SPACE_ID" in os.environ:
+        index_urls = ["https://pypi.org/simple",
+                      "https://pypi.tuna.tsinghua.edu.cn/simple"]
+    else:
+        index_urls = ["https://pypi.tuna.tsinghua.edu.cn/simple",
+                      "https://pypi.org/simple"]
+
+    for index_url in index_urls:
+        if _pip_install(missing, index_url):
+            break
+    else:
+        sys.exit(f"[!] 依赖安装失败，请手动执行: {sys.executable} -m pip install "
+                 f"{' '.join(missing)}")
+
+    still_missing = [module for module in packages
+                     if importlib.util.find_spec(module) is None]
+    if still_missing:
+        sys.exit(f"[!] 依赖安装后仍无法导入: {', '.join(still_missing)}")
+
+ensure_dependencies()
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
