@@ -20,7 +20,7 @@ fi
 # APP_ICON_PATH 默认使用项目原始矢量图标；可改为 PNG、WebP 或矢量 XML 文件。
 # ============================================================
 unset APPLICATION_ID VERSION_CODE VERSION_NAME APP_NAME BUILD_ABIS
-VERSION_CODE="${VERSION_CODE:-20260920}"
+VERSION_CODE="${VERSION_CODE:-20261020}"
 
 APP_CHINESE_NAME="${APP_CHINESE_NAME:-随手}"
 APP_NAME="${APP_CHINESE_NAME}输入法"
@@ -49,7 +49,7 @@ if [[ ! -f "$APP_ICON_PATH" || ! -r "$APP_ICON_PATH" || ! -s "$APP_ICON_PATH" ]]
 fi
 
 APP_ICON_PATH="$(realpath -- "$APP_ICON_PATH")"
-printf '应用图标文件：%s\n' "$APP_ICON_PATH"
+printf '%s 应用图标文件：%s\n' $VERSION_CODE "$APP_ICON_PATH"
 
 # ============================================================
 # 新增环境隔离：强制让 Gradle 和 Android 工具依赖外层工作区目录
