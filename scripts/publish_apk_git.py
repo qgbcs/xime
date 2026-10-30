@@ -233,6 +233,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="SSH 私钥（默认 %s，不存在直接退出）" % DEFAULT_KEY)
     ap.add_argument("--message", default=None, help="提交信息；默认带构建信息与 SHA256")
     ap.add_argument("--dry-run", action="store_true", help="只校验 key/仓库/APK 并打印链接，不提交不推送")
+    ap.add_argument("--force", action="store_true",
+                    help="仓库里 ime.apk 与本地 APK 内容相同时也照常重写提交（默认跳过）")
     ap.add_argument("--reset-history", action="store_true",
                     help="历史超过 1 个提交时重写为单提交（仍用 force-with-lease）")
     ap.add_argument("--check-url", action="store_true", help="推送后 HEAD 一次 ghfast 直链")
@@ -271,14 +273,34 @@ def main(argv: "list[str] | None" = None) -> int:
     workdir = ensure_workdir(workdir, repo, branch, env, args.dry_run)
     log("工作副本 : %s" % workdir)
 
+    # 比对仓库里已有的同名文件与本地 APK（git blob 相同即内容相同）
+    local_blob = ""
+    head_blob = ""
+    if workdir.is_dir():
+        local_blob = git(["hash-object", str(apk)], workdir, env,
+                         allow_fail=True).stdout.strip()
+        head_blob = git(["rev-parse", "HEAD:%s" % args.name], workdir, env,
+                        allow_fail=True).stdout.strip()
+    same = bool(local_blob) and local_blob == head_blob
+
     if args.dry_run:
         rhead = remote_head(workdir, env, branch) if workdir.is_dir() else None
         log("远端分支 : %s" % ((rhead or "(空仓库/无该分支)")))
-        log("\n[dry-run] 将执行：复制为 %s → %s → %s"
-            % (args.name,
-               "git commit --amend" if rhead and head_count(workdir, env) else "git commit",
-               "git push --force-with-lease" if rhead else "git push -u origin %s" % branch))
+        log("APK 变化 : %s" % ("否（重复运行会跳过）" if same and not args.force
+                              else "是/无法判断（会提交并推送）"))
+        if same and not args.force:
+            log("\n[dry-run] APK 与仓库一致，实际运行会直接跳过（加 --force 才会重写）")
+        else:
+            log("\n[dry-run] 将执行：复制为 %s → %s → %s"
+                % (args.name,
+                   "git commit --amend" if rhead and head_count(workdir, env) else "git commit",
+                   "git push --force-with-lease" if rhead else "git push -u origin %s" % branch))
         log("加速直链 : %s" % fast)
+        return 0
+
+    if same and not args.force:
+        log("APK 与仓库 HEAD:%s 一致（blob %s），跳过 amend/推送；要强制重写加 --force"
+            % (args.name, local_blob))
         return 0
 
     # 3) 放入仓库（跨文件系统时退回复制）

@@ -46,6 +46,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -95,6 +96,27 @@ def sha1_file(path: Path, chunk: int = 1 << 20) -> str:
         for block in iter(lambda: f.read(chunk), b""):
             h.update(block)
     return h.hexdigest()
+
+
+# 本地状态缓存：记录上次发布版本的 APK sha256，避免每次都下载 60MB tarball 比对
+STATE_FILE = DEFAULT_OUT_DIR / ".npm_publish_state.json"
+
+
+def read_state() -> dict:
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 - 缓存坏了就当没有
+        return {}
+
+
+def write_state(version: str, digest: str, pkg: str) -> None:
+    try:
+        STATE_FILE.write_text(json.dumps({"package": pkg, "version": version,
+                                          "sha256": digest}, ensure_ascii=False),
+                              encoding="utf-8")
+    except OSError as exc:
+        log("  [WARN] 写本地发布状态失败：%s" % exc)
 
 
 # ---------------------------------------------------------------- token / npmrc
@@ -200,6 +222,48 @@ def fetch_packument(registry: str, pkg: str, timeout: float = 30.0) -> dict:
         die("无法访问 registry %s：%s（检查网络/代理）" % (registry, exc))
 
 
+def tarball_member_sha256(tarball_url: str, member: str,
+                          timeout: float = 300.0) -> "str | None":
+    """下载 tarball 并计算指定成员文件的 sha256（旧版本未写 apkSha256 时用）。"""
+    tmpdir = tempfile.mkdtemp(prefix=".npm-sha-")
+    tmp = Path(tmpdir) / "pkg.tgz"
+    try:
+        req = urllib.request.Request(
+            tarball_url, headers={"User-Agent": "xime-publish-apk/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp, open(tmp, "wb") as fh:
+            shutil.copyfileobj(resp, fh, 1 << 20)
+        with tarfile.open(tmp, "r:gz") as tf:
+            try:
+                member_file = tf.extractfile(member)
+            except KeyError:
+                return None
+            if member_file is None:
+                return None
+            h = hashlib.sha256()
+            for block in iter(lambda: member_file.read(1 << 20), b""):
+                h.update(block)
+            return h.hexdigest()
+    except Exception as exc:  # noqa: BLE001 - 比对失败就当“无法判断”
+        log("  无法比对已发布 tarball（%s）" % exc)
+        return None
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def published_apk_sha(version: str, meta: dict, name: str) -> "str | None":
+    """取已发布版本记录的 APK sha256；旧版本没写元数据时回落到下载 tarball。"""
+    extra = meta.get("xime")
+    if isinstance(extra, dict):
+        sha = str(extra.get("apkSha256") or "").strip().lower()
+        if sha:
+            return sha
+    tarball = (meta.get("dist") or {}).get("tarball") or ""
+    if not tarball:
+        return None
+    log("  %s 未记录 apkSha256，下载 tarball 比对一次…" % version)
+    return tarball_member_sha256(tarball, "package/" + name)
+
+
 _RELEASE_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -291,6 +355,8 @@ adb install -r {name}
         "description": "qgb xime APK distribution (arm64-v8a, file %s)" % pub_name,
         "keywords": ["qgb", "xime", "apk", "android", "distribution"],
         "files": [pub_name, "SHA256SUMS.txt", "README.md"],
+        # 写进包元数据，下次发布前可直接比对 APK 是否变化（避免重复发版）
+        "xime": {"apkSha256": digest, "apkName": pub_name, "apkSize": size},
     }
     if pkg.startswith("@"):
         manifest["publishConfig"] = {"access": "public"}
@@ -414,6 +480,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--save-token", default=None, metavar="TOKEN",
                     help="把 token 写入 ~/.npmrc（chmod 600）后退出")
     ap.add_argument("--dry-run", action="store_true", help="只打包校验，不上传")
+    ap.add_argument("--force", action="store_true",
+                    help="APK 与最新已发布版本相同时也照常发新版本（默认自动跳过）")
     ap.add_argument("--list-versions", action="store_true", help="列出 registry 上已有版本后退出")
     ap.add_argument("--keep-stage", action="store_true", help="保留临时打包目录")
     ap.add_argument("--allow-large", action="store_true",
@@ -445,6 +513,8 @@ def main(argv: "list[str] | None" = None) -> int:
         die("文件为空：%s" % apk)
 
     log("APK      : %s (%s)" % (apk, human_size(apk.stat().st_size)))
+    digest = sha256_file(apk)
+    log("SHA256   : %s" % digest)
 
     # 2) 查已有版本
     pkgdoc = fetch_packument(args.registry, args.package)
@@ -468,6 +538,27 @@ def main(argv: "list[str] | None" = None) -> int:
     else:
         version = choose_next_version(existing)
     log("新版本   : %s@%s (tag=%s, 包内文件=%s)" % (args.package, version, args.tag, args.name))
+
+    # 3.5) APK 与最新已发布版本完全一致时跳过，避免无意义地造新版本
+    if not args.force and existing:
+        latest = existing[-1]
+        prev_sha = None
+        state = read_state()
+        if state.get("package") == args.package and state.get("version") == latest:
+            prev_sha = str(state.get("sha256") or "").strip().lower() or None
+        if not prev_sha:
+            prev_meta = (pkgdoc.get("versions") or {}).get(latest) or {}
+            prev_sha = published_apk_sha(latest, prev_meta, args.name)
+            if prev_sha:
+                write_state(latest, prev_sha, args.package)
+        if prev_sha and prev_sha == digest:
+            log("APK 与 %s@%s 完全一致，跳过发布（要重发加 --force）"
+                % (args.package, latest))
+            return 0
+        if prev_sha:
+            log("APK 有变化（%s → %s），继续发布" % (prev_sha[:12], digest[:12]))
+        else:
+            log("无法判断 APK 是否变化（旧版本未记录 sha256），照常发布")
 
     # 4) 打包
     stage, digest = build_stage(apk, args.package, version, args.tag, args.name)
@@ -531,6 +622,7 @@ def main(argv: "list[str] | None" = None) -> int:
                                   timeout=args.verify_timeout)
         if status == "ok":
             log("\n发布成功：%s@%s" % (args.package, version))
+            write_state(version, digest, args.package)
         elif status == "mismatch":
             log("\n[WARN] 已发布，但 tarball shasum 与 registry 记录不一致，请人工核查")
         else:
