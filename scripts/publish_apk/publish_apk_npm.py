@@ -48,6 +48,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -63,6 +64,8 @@ DEFAULT_OUT_DIR = Path("/root/build_xime_home/xime/out")
 APK_PATTERN = "com.qgb.xime-*-arm64-v8a.apk"
 # registry 对单个 tgz 的常见上限是 100MiB；超过先拦一下，确认后可用 --allow-large 放行
 MAX_TARBALL_MIB = 100.0
+
+_PRINT_LOCK = threading.Lock()
 
 
 def log(msg: str = "") -> None:
@@ -407,6 +410,66 @@ def run_npm(args: "list[str]", cwd: Path, timeout: float,
         die("npm 执行超时（%.0fs）：%s" % (timeout, " ".join(args)), code=1)
 
 
+def run_npm_stream(args: "list[str]", cwd: Path, timeout: float,
+                   extra_env: "dict[str, str] | None" = None,
+                   hint_total: int = 0) -> "tuple[int, str]":
+    """流式 npm（publish 用）：输出实时打印，静默/长传时打心跳，绝不看起来卡死。
+
+    registry 对 tgz 上传不给字节级进度，所以心跳里给“状态 + 已用时长 + 包体积”；
+    若将来 npm 输出了速度行，也会原样实时透传。
+    """
+    cmd = [npm_exe()] + list(args)
+    env = os.environ.copy()
+    env.setdefault("npm_config_fund", "false")
+    env.setdefault("npm_config_audit", "false")
+    if extra_env:
+        env.update(extra_env)
+    log("$ npm " + " ".join(args))
+    proc = subprocess.Popen(cmd, cwd=str(cwd), env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+    started = time.monotonic()
+    last = [started]
+    stop = threading.Event()
+    killed = [False]
+
+    def watch() -> None:
+        while not stop.wait(5.0):
+            now = time.monotonic()
+            elapsed_ms, idle = (now - started) * 1000, now - last[0]
+            if elapsed_ms / 1000 >= timeout:
+                killed[0] = True
+                log("  ⏱ npm 已运行 %.0fs 超过上限，终止进程" % (elapsed_ms / 1000))
+                proc.terminate()
+                return
+            if idle >= 5.0:
+                log("  ⏳ npm publish 已 %.0fs（tgz %s；registry 无字节级进度，仍在传输/处理，"
+                    "静默 %.0fs）" % ((now - started), human_size(hint_total), idle))
+
+    t = threading.Thread(target=watch, daemon=True)
+    t.start()
+    lines: "list[str]" = []
+    assert proc.stdout is not None
+    try:
+        for line in proc.stdout:
+            last[0] = time.monotonic()
+            stripped = line.rstrip("\n")
+            lines.append(stripped)
+            with _PRINT_LOCK:
+                print(stripped, flush=True)
+    finally:
+        stop.set()
+        t.join(timeout=2.0)
+        try:
+            proc.stdout.close()
+        except Exception:  # noqa: BLE001
+            pass
+    rc = proc.wait()
+    log("  npm 结束：rc=%s，用时 %.1fs%s"
+        % (rc, time.monotonic() - started, "（被超时终止）" if killed[0] else ""))
+    return rc, "\n".join(lines)
+
+
 def npm_pack(stage: Path, timeout: float = 900.0) -> dict:
     proc = run_npm(["pack", "--json", "--ignore-scripts", "--pack-destination", str(stage)],
                    cwd=stage, timeout=timeout)
@@ -427,14 +490,15 @@ def npm_pack(stage: Path, timeout: float = 900.0) -> dict:
 
 
 def npm_publish(tgz: Path, tag: str, registry: str, npmrc: Path,
-                timeout: float, otp: "str | None" = None) -> subprocess.CompletedProcess:
+                timeout: float, otp: "str | None" = None) -> "tuple[int, str]":
     args = ["publish", str(tgz), "--tag", tag,
             "--registry", registry.rstrip("/"), "--ignore-scripts",
             "--userconfig", str(npmrc)]
     if otp:
         args += ["--otp", otp]
-    return run_npm(args, cwd=tgz.parent, timeout=timeout,
-                   extra_env={"npm_config_userconfig": str(npmrc)})
+    return run_npm_stream(args, cwd=tgz.parent, timeout=timeout,
+                          extra_env={"npm_config_userconfig": str(npmrc)},
+                          hint_total=tgz.stat().st_size)
 
 
 def verify_published(pkg: str, version: str, shasum: str, registry: str,
@@ -611,12 +675,11 @@ def main(argv: "list[str] | None" = None) -> int:
         log("token 来源: %s" % source)
         npmrc = write_temp_npmrc(token, args.registry, stage)
 
-        # 6) 发布
-        proc = npm_publish(tgz_path, args.tag, args.registry, npmrc,
-                           timeout=args.timeout, otp=args.otp)
-        if proc.returncode != 0:
-            err = (proc.stderr or "").strip()
-            out = (proc.stdout or "").strip()
+        # 6) 发布（流式：输出实时打印 + 每 5s 心跳，不会看起来卡住）
+        rc, publish_out = npm_publish(tgz_path, args.tag, args.registry, npmrc,
+                                      timeout=args.timeout, otp=args.otp)
+        if rc != 0:
+            err = publish_out.strip()
             hint = ""
             low = err.lower()
             if "two-factor" in low or "bypass 2fa" in low:
@@ -628,10 +691,8 @@ def main(argv: "list[str] | None" = None) -> int:
             elif "e403" in low or "403" in err:
                 hint = ("\n提示：403 多为 token 无该包写权限/版本已存在。"
                         "检查 npm owner ls %s 与 token 权限。" % args.package)
-            die("npm publish 失败（rc=%s）%s\nstdout:\n%s\nstderr:\n%s"
-                % (proc.returncode, hint, out, err), code=1)
-        if (proc.stdout or "").strip():
-            log((proc.stdout or "").strip())
+            die("npm publish 失败（rc=%s）%s\n输出：\n%s"
+                % (rc, hint, err), code=1)
 
         # 7) 回查校验（大包会被 registry 异步处理：PUT 返回 202）
         log("\n回查 registry 校验（最多等 %.0fs）…" % args.verify_timeout)

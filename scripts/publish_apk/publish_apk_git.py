@@ -4,12 +4,13 @@
 
 与 publish_apk_npm.py 的区别:
 - 目标是 Git 仓库（默认 git@ssh.github.com:QGB/suishou），不是 npm。
+- 加 --gitee 则改推 Gitee 镜像 git@gitee.com:qgbcs/suishou.git（同一把 SSH 密钥即可）。
 - 包内文件名固定 ime.apk，且只保留一份历史：
   首次发布 -> 普通 commit + push；
   后续发布 -> `git commit --amend` + `git push --force-with-lease`，
   这样 63MB 的 blob 不会每构建一次就在历史里再存一份。
 - 同时发布 SHA256SUMS.txt（sha256sum -c 兼容格式），下载大文件前可先取它校验。
-- 结束后打印 ghfast.top 加速直链（https://ghfast.top/https://github.com/...）。
+- 结束后打印下载直链：GitHub 带 ghfast.top 加速链，Gitee 直接给源站下载直链。
 
 前置条件:
 - 本机必须有 SSH 私钥（默认 ~/.ssh/NIST256p.pem，缺失直接报错退出）。
@@ -22,6 +23,9 @@
 
     # 默认：取 out/ 下最新 APK，推到 QGB/suishou 的 main，覆盖式更新
     python3 publish_apk_git.py
+
+    # 推到 Gitee 镜像（同一把密钥，工作副本默认 /root/suishou_gitee）
+    python3 publish_apk_git.py --gitee
 
     # 指定 APK / 分支 / 工作副本 / key
     python3 publish_apk_git.py --apk out/com.qgb.xime-xxxx.apk --branch main \
@@ -43,13 +47,17 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 DEFAULT_REPO = "git@ssh.github.com:QGB/suishou"
+GITEE_REPO = "git@gitee.com:qgbcs/suishou.git"
 DEFAULT_BRANCH = "main"
 DEFAULT_WORKDIR = Path("/root/suishou")
+GITEE_WORKDIR = Path("/root/suishou_gitee")
 DEFAULT_KEY = Path("~/.ssh/NIST256p.pem")
 DEFAULT_OUT_DIR = Path("/root/build_xime_home/xime/out")
 APK_PATTERN = "com.qgb.xime-*-arm64-v8a.apk"
@@ -58,6 +66,8 @@ DEFAULT_MESSAGE = "ime.apk 覆盖更新（xime arm64-v8a）"
 SUMS_NAME = "SHA256SUMS.txt"
 # GitHub 单文件硬上限 100MiB；超过直接拦下
 MAX_FILE_MIB = 100.0
+
+_PRINT_LOCK = threading.Lock()
 
 
 def log(msg: str = "") -> None:
@@ -129,6 +139,56 @@ def git(cmd: "list[str]", cwd: Path, env: "dict[str, str]", timeout: float = 900
     return proc
 
 
+def git_stream(cmd: "list[str]", cwd: Path, env: "dict[str, str]",
+               timeout: float) -> int:
+    """流式 git（push 用）：输出边产生边打印，沉默时打心跳，超时自动终止。
+
+    与 git() 的区别是不再 capture_output —— 后者会把 git 的进度条憋到结束才一次性
+    显示，60MB 推送期间看起来就是“卡死”。这里 --progress 的 `… | x MiB/s` 实时可见。
+    """
+    proc = subprocess.Popen(["git"] + list(cmd), cwd=str(cwd), env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+    started = time.monotonic()
+    last = [started]
+    stop = threading.Event()
+    killed = [False]
+
+    def watch() -> None:
+        while not stop.wait(5.0):
+            now = time.monotonic()
+            elapsed, idle = now - started, now - last[0]
+            if elapsed >= timeout:
+                killed[0] = True
+                log("  ⏱ 已运行 %.0fs 超过 %.0fs 上限，终止 git %s"
+                    % (elapsed, timeout, " ".join(cmd[:2])))
+                proc.terminate()
+                return
+            if idle >= 5.0:
+                log("  推送中：已 %.0fs 无新输出（pid=%s 仍在跑，累计 %.0fs；"
+                    "git 每传 1MiB 才刷新一次进度）" % (idle, proc.pid, elapsed))
+
+    t = threading.Thread(target=watch, daemon=True)
+    t.start()
+    assert proc.stdout is not None
+    try:
+        for line in proc.stdout:
+            last[0] = time.monotonic()
+            with _PRINT_LOCK:
+                print(line.rstrip("\n"), flush=True)
+    finally:
+        stop.set()
+        t.join(timeout=2.0)
+        try:
+            proc.stdout.close()
+        except Exception:  # noqa: BLE001
+            pass
+    rc = proc.wait()
+    log("  推送结束：rc=%s，用时 %.1fs%s"
+        % (rc, time.monotonic() - started, "（被超时终止）" if killed[0] else ""))
+    return rc
+
+
 def owner_repo(url: str) -> "tuple[str, str]":
     u = url.strip().rstrip("/")
     if u.endswith(".git"):
@@ -137,6 +197,16 @@ def owner_repo(url: str) -> "tuple[str, str]":
     if len(parts) < 2:
         die("无法从仓库地址解析 owner/repo：%s" % url)
     return parts[-2], parts[-1]
+
+
+def repo_host(url: str) -> str:
+    # 识别仓库托管方：github / gitee / other（决定下载直链怎么拼）
+    u = url.lower()
+    if "github.com" in u:
+        return "github"
+    if "gitee.com" in u:
+        return "gitee"
+    return "other"
 
 
 def ensure_workdir(target: Path, repo: str, branch: str,
@@ -202,7 +272,11 @@ def remote_head(workdir: Path, env: "dict[str, str]", branch: str) -> "str | Non
 
 
 def build_links(repo: str, branch: str, name: str) -> "tuple[str, str, str]":
+    # 返回 (主直链, 加速链, 源站链)；Gitee 无第三方加速代理，三者都指向同一源站直链
     owner, rname = owner_repo(repo)
+    if repo_host(repo) == "gitee":
+        raw = "https://gitee.com/%s/%s/raw/%s/%s" % (owner, rname, branch, name)
+        return raw, raw, raw
     raw = "https://github.com/%s/%s/raw/%s/%s" % (owner, rname, branch, name)
     fast = "https://ghfast.top/" + raw
     direct = "https://raw.githubusercontent.com/%s/%s/%s/%s" % (owner, rname, branch, name)
@@ -232,10 +306,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="要发布的 APK（默认 out/ 下最新的 %s）" % APK_PATTERN)
     ap.add_argument("--name", default=DEFAULT_PUBLISH_NAME,
                     help="仓库内的文件名（默认 %s）" % DEFAULT_PUBLISH_NAME)
-    ap.add_argument("--repo", default=DEFAULT_REPO, help="Git 仓库地址（默认 %s）" % DEFAULT_REPO)
+    ap.add_argument("--repo", default=None,
+                    help="Git 仓库地址（默认 %s；--gitee 时为 %s）" % (DEFAULT_REPO, GITEE_REPO))
     ap.add_argument("--branch", default=DEFAULT_BRANCH, help="分支（默认 %s）" % DEFAULT_BRANCH)
-    ap.add_argument("--dir", default=str(DEFAULT_WORKDIR),
-                    help="本地工作副本（默认 %s，不存在时 clone）" % DEFAULT_WORKDIR)
+    ap.add_argument("--dir", default=None,
+                    help="本地工作副本（默认 %s；--gitee 时为 %s，不存在时 clone）"
+                         % (DEFAULT_WORKDIR, GITEE_WORKDIR))
+    ap.add_argument("--gitee", action="store_true",
+                    help="推送到 Gitee 镜像 %s（工作副本默认 %s）" % (GITEE_REPO, GITEE_WORKDIR))
     ap.add_argument("--key", default=str(DEFAULT_KEY),
                     help="SSH 私钥（默认 %s，不存在直接退出）" % DEFAULT_KEY)
     ap.add_argument("--message", default=None, help="提交信息；默认带构建信息与 SHA256")
@@ -271,8 +349,8 @@ def main(argv: "list[str] | None" = None) -> int:
     log("SHA256   : %s" % digest)
 
     env = ssh_env(key)
-    workdir = Path(args.dir).expanduser()
-    repo = args.repo.rstrip("/")
+    repo = (args.repo or (GITEE_REPO if args.gitee else DEFAULT_REPO)).rstrip("/")
+    workdir = Path(args.dir or (GITEE_WORKDIR if args.gitee else DEFAULT_WORKDIR)).expanduser()
     branch = args.branch
     raw, fast, direct = build_links(repo, branch, args.name)
     sums_raw, sums_fast, _ = build_links(repo, branch, SUMS_NAME)
@@ -308,8 +386,12 @@ def main(argv: "list[str] | None" = None) -> int:
                 % (args.name, SUMS_NAME,
                    "git commit --amend" if rhead and head_count(workdir, env) else "git commit",
                    "git push --force-with-lease" if rhead else "git push -u origin %s" % branch))
-        log("APK 加速  : %s" % fast)
-        log("SUMS 加速 : %s" % sums_fast)
+        log("APK 直链  : %s" % raw)
+        if fast != raw:
+            log("APK 加速  : %s" % fast)
+        log("SUMS 直链 : %s" % sums_raw)
+        if sums_fast != sums_raw:
+            log("SUMS 加速 : %s" % sums_fast)
         return 0
 
     if same and not args.force:
@@ -359,10 +441,16 @@ def main(argv: "list[str] | None" = None) -> int:
     head = git(["rev-parse", "HEAD"], workdir, env).stdout.strip()
     log("commit   : %s" % head)
 
+    log("推送中   : git push --progress（%s → %s，%s）"
+        % (branch, repo, human_size(size)))
+    push_args = ["push", "--progress"]
     if rhead:
-        git(["push", "--force-with-lease", "origin", branch], workdir, env, timeout=args.timeout)
+        push_args += ["--force-with-lease", "origin", branch]
     else:
-        git(["push", "-u", "origin", branch], workdir, env, timeout=args.timeout)
+        push_args += ["-u", "origin", branch]
+    rc = git_stream(push_args, workdir, env, timeout=args.timeout)
+    if rc != 0:
+        die("git push 失败（rc=%s）：远端拒绝或网络中断；看上面最后几行输出" % rc, code=1)
 
     new_remote = remote_head(workdir, env, branch)
     if new_remote != head:
@@ -370,12 +458,14 @@ def main(argv: "list[str] | None" = None) -> int:
 
     log("\n推送完成（覆盖式，仅保留 1 个提交）")
     log("  仓库     : %s (%s)" % (repo, branch))
-    log("  GitHub   : %s" % raw)
-    log("  加速链接 : %s" % fast)
-    log("  源站直连 : %s" % direct)
+    log("  下载直链 : %s" % raw)
+    if fast != raw:
+        log("  加速链接 : %s" % fast)
+        log("  源站直连 : %s" % direct)
     log("  SHA256   : %s" % digest)
     log("  SUMS     : %s" % sums_raw)
-    log("  SUMS 加速: %s" % sums_fast)
+    if sums_fast != sums_raw:
+        log("  SUMS 加速 : %s" % sums_fast)
     if args.check_url:
         log("  链接探测 : %s" % check_url(fast))
     return 0
