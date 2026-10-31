@@ -7,6 +7,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.display.DisplayManager
 import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
@@ -14,6 +15,7 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.view.Display
 import com.chaquo.python.Python
 import com.kingzcheung.xime.util.FileLogger
 import org.json.JSONArray
@@ -39,6 +41,9 @@ object SystemEventMonitor {
     private const val PY_METHOD = "fire_event"
     private const val LOG_MAX = 500
 
+    /** 屏幕旋转事件名：Android 没有旋转广播，只能由 DisplayManager 回调产生。 */
+    private const val ROTATION_EVENT = "screen_rotation_changed"
+
     private val lock = Any()
     private val log = ArrayDeque<String>()
 
@@ -46,6 +51,9 @@ object SystemEventMonitor {
     private var registered: Set<String> = emptySet()
     private var started = false
     private lateinit var handler: Handler
+
+    /** 最近一次默认屏幕旋转值（Surface.ROTATION_*）；-1 表示不可得。 */
+    private var lastRotation = -1
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -140,6 +148,7 @@ object SystemEventMonitor {
         register(ctx, base)
         register(ctx, pkg)
         register(ctx, media)
+        startRotationListener(ctx)
         FileLogger.i(TAG, "系统广播监听已注册，缓冲上限 $LOG_MAX")
     }
 
@@ -160,7 +169,52 @@ object SystemEventMonitor {
     private fun record(intent: Intent) {
         val action = intent.action ?: return
         val name = nameOf(action) ?: return
-        val payload = buildPayload(intent, action)
+        append(name, buildPayload(intent, action))
+    }
+
+    /**
+     * 屏幕旋转监听：旋转不是广播，只能用 DisplayManager 回调。
+     *
+     * onDisplayChanged 在很多场景（刷新率、HDR、分辨率）都会回调，所以只在
+     * 默认屏幕的 rotation 真正变化时记一行；180° 翻转也能被捕获。
+     */
+    private fun startRotationListener(context: Context) {
+        try {
+            val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+            lastRotation = rotationOf(dm)
+            val listener = object : DisplayManager.DisplayListener {
+                override fun onDisplayAdded(displayId: Int) {}
+                override fun onDisplayRemoved(displayId: Int) {}
+
+                override fun onDisplayChanged(displayId: Int) {
+                    if (displayId != Display.DEFAULT_DISPLAY) return
+                    val rotation = rotationOf(dm)
+                    if (rotation < 0 || rotation == lastRotation) return
+                    lastRotation = rotation
+                    append(
+                        ROTATION_EVENT,
+                        JSONObject()
+                            .put("ts", System.currentTimeMillis())
+                            .put("rotation", rotation)
+                            .put("degrees", rotation * 90),
+                    )
+                }
+            }
+            dm.registerDisplayListener(listener, handler)
+            FileLogger.i(TAG, "屏幕旋转监听已注册，初始 rotation=$lastRotation")
+        } catch (t: Throwable) {
+            FileLogger.w(TAG, "屏幕旋转监听注册失败: ${t.javaClass.simpleName}")
+        }
+    }
+
+    private fun rotationOf(dm: DisplayManager): Int = try {
+        dm.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: -1
+    } catch (t: Throwable) {
+        -1
+    }
+
+    /** 写环形缓冲；仅当 Python 侧有启用的事件任务订阅了该事件时才投递。 */
+    private fun append(name: String, payload: JSONObject) {
         val line = "${System.currentTimeMillis()} | $name | $payload"
         val deliver: Boolean
         synchronized(lock) {

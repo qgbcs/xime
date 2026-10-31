@@ -27,6 +27,8 @@ Python 负责任务注册表、状态持久化、执行统计与接力下一次�
   network_offline    默认网络丢失/失效
   network_state      进程启动首帧的网络快照（非边沿，payload 带 initial=true）
   screen_on/screen_off 等  系统广播（Kotlin SystemEventMonitor，默认只记账不进 Python）
+  screen_rotation_changed   屏幕旋转（无对应系统广播，由 DisplayManager 回调产生，
+                            payload 含 rotation 0~3 与 degrees）
 
 RPC 示例：
   r=task_manager.add_daily_task("dailytest", "08:30",
@@ -106,6 +108,8 @@ EVENTS = (
     "time_changed",
     "timezone_changed",
     "input_method_changed",
+    # DisplayManager 回调（非广播）：屏幕旋转
+    "screen_rotation_changed",
 )
 
 # ---- 任务函数注册表：name -> callable() -> object（少量内置示例函数） ----
