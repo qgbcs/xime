@@ -54,6 +54,11 @@ r = task_manager.add_event_task("npboot", "boot_completed",
 | `wifi_disconnected` | 默认网络离开 WiFi |
 | `network_online` | 默认网络具备 INTERNET 能力位（连网） |
 | `network_offline` | 默认网络失去 INTERNET（断网） |
+| `network_state` | 进程启动首帧的网络快照（非边沿，payload 带 `initial: true`，与 `wifi_connected` 区分） |
+
+> `network_state` 每次进程启动只发一次，用来解决“开机时 WiFi 早已连着、`wifi_connected`
+> 永远等不到边沿”的场景：任务订阅它，再配合 `task_manager.network_state()` 判断
+> “已是目标状态就跳过”，既不会重复执行也不会漏。需要严格的开机语义请用 `boot_completed`。
 
 > 事件入口为 `fire_event()`，也可通过 `test_event()` 本地模拟，走完全相同的队列。
 
@@ -70,6 +75,7 @@ r = task_manager.add_event_task("npboot", "boot_completed",
 | `list_tasks()` | 全部任务及其状态 |
 | `list_events()` | 可订阅事件名 |
 | `recent_events(limit=20)` | 最近事件环形缓冲（最多 50 条） |
+| `network_state()` | 当前网络快照 `{wifi, online, validated, initialized, ts}` |
 | `test_event(event, payload=None)` | 本地模拟事件 |
 | `consume_boot_pending()` | 幂等消费开机待发标记并派发 `boot_completed` |
 

@@ -23,8 +23,9 @@ Python 负责任务注册表、状态持久化、执行统计与接力下一次�
   boot_completed     设备开机完成（BootEventReceiver 写标记，首次 init 补发）
   wifi_connected     默认网络切到 WiFi 且边沿进入
   wifi_disconnected  默认网络离开 WiFi
-  network_online     默认网络通过 NET_CAPABILITY_VALIDATED 校验
+  network_online     默认网络具备 NET_CAPABILITY_INTERNET（可上网）
   network_offline    默认网络丢失/失效
+  network_state      进程启动首帧的网络快照（非边沿，payload 带 initial=true）
   screen_on/screen_off 等  系统广播（Kotlin SystemEventMonitor，默认只记账不进 Python）
 
 RPC 示例：
@@ -36,6 +37,7 @@ RPC 示例：
   r=task_manager.list_tasks()
   r=task_manager.recent_events()
   r=task_manager.system_events(100, True)   # 多行文本，每行一个事件（本地时间格式化）
+  r=task_manager.network_state()            # 当前网络快照 {wifi, online, validated, initialized, ts}
 """
 import io
 import json
@@ -61,6 +63,13 @@ _EVENT_Q = queue.Queue()
 _RECENT_EVENTS = []          # 环形缓冲，供 RPC 回读
 _RECENT_MAX = 50
 
+# init 载入任务表之前到达的事件先缓存，载入完成后按原顺序补发。
+# 典型场景：NetworkEventMonitor 首帧的 network_state 快照（Kotlin 先于 Python
+# 就绪产生），若直接匹配会撞上空任务表而被丢掉。
+_LOADED = False
+_PRE_INIT_EVENTS = []
+_PRE_INIT_MAX = 64
+
 # 事件名白名单（仅用于 RPC 提示；fire_event 不强制，以后加事件不用改 Python）
 EVENTS = (
     "boot_completed",
@@ -68,6 +77,7 @@ EVENTS = (
     "wifi_disconnected",
     "network_online",
     "network_offline",
+    "network_state",
     # 以下由 Kotlin SystemEventMonitor 动态注册的系统广播产生
     "screen_on",
     "screen_off",
@@ -125,7 +135,7 @@ register_func("heartbeat", _builtin_heartbeat)
 
 def init(files_dir):
     """app.py start() 内调用：加载持久化状态，恢复定时任务调度。"""
-    global _STATE_PATH
+    global _STATE_PATH, _LOADED
     _STATE_PATH = os.path.join(files_dir, "task_manager.json")
     with _LOCK:
         try:
@@ -148,13 +158,28 @@ def init(files_dir):
                 daily_n += 1
             else:
                 event_n += 1
+        _LOADED = True
     _sync_system_events()
     _ensure_event_worker()
+    _replay_pre_init_events()
     consume_boot_pending()
     print(f"[task_manager] init done, {len(_STATE['tasks'])} tasks, "
           f"{interval_n} interval + {daily_n} daily rescheduled, "
           f"{event_n} event tasks armed")
     return True
+
+
+def _replay_pre_init_events():
+    """把 init 之前缓存的事件补发给刚载入的任务表（只补发一次）。"""
+    with _LOCK:
+        items = list(_PRE_INIT_EVENTS)
+        del _PRE_INIT_EVENTS[:]
+    for name, payload, source in items:
+        try:
+            fire_event(name, payload, source=source)
+        except Exception:
+            print("[task_manager] 补发预初始化事件失败:\n"
+                  + traceback.format_exc(limit=2))
 
 
 def _save():
@@ -191,6 +216,7 @@ def _schedule(task_id, delay_seconds):
 # ============================ 系统广播（Kotlin SystemEventMonitor） ============================
 
 _SYSTEM_MONITOR = "com.kingzcheung.xime.task.SystemEventMonitor"
+_NETWORK_MONITOR = "com.kingzcheung.xime.task.NetworkEventMonitor"
 
 
 def _sync_system_events():
@@ -410,6 +436,23 @@ def recent_events(limit=20):
         return list(_RECENT_EVENTS[-max(1, int(limit)):])
 
 
+def network_state():
+    """当前默认网络快照（Kotlin NetworkEventMonitor.getState()）。
+
+    返回 dict：wifi / online（INTERNET 能力位）/ validated / initialized /
+    ts（毫秒）。进程刚起、首个网络回调未到之前 initialized=False 且字段全零，
+    任务应视为“未知”而不是“未联网”。
+    """
+    if _jclass is None:
+        return {"ok": False, "error": "非 Android 环境"}
+    try:
+        snap = json.loads(_jclass(_NETWORK_MONITOR).getState())
+        snap["ok"] = True
+        return snap
+    except Exception:
+        return {"ok": False, "error": traceback.format_exc(limit=2)}
+
+
 def _fmt_epoch_ms(ms):
     """epoch 毫秒 -> 本地时间 'YYYY-MM-DD HH:MM:SS.mmm'；None 返回 '-'。"""
     if ms is None:
@@ -518,11 +561,18 @@ def fire_event(event_name, payload=None, source="system"):
         _RECENT_EVENTS.append(rec)
         if len(_RECENT_EVENTS) > _RECENT_MAX:
             del _RECENT_EVENTS[:-_RECENT_MAX]
-        matches = [
-            tid for tid, t in _STATE["tasks"].items()
-            if _kind(t) == "event" and t.get("enabled", True)
-            and t.get("event") == event_name
-        ]
+        if not _LOADED:
+            # init 还没载入任务表：先缓存，等 init 末尾按原顺序补发，避免丢事件
+            _PRE_INIT_EVENTS.append((str(event_name), payload, source))
+            if len(_PRE_INIT_EVENTS) > _PRE_INIT_MAX:
+                del _PRE_INIT_EVENTS[:-_PRE_INIT_MAX]
+            matches = []
+        else:
+            matches = [
+                tid for tid, t in _STATE["tasks"].items()
+                if _kind(t) == "event" and t.get("enabled", True)
+                and t.get("event") == event_name
+            ]
     _ensure_event_worker()
     for tid in matches:
         _EVENT_Q.put((event_name, payload, tid))
